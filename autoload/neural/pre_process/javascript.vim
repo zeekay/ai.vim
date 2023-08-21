@@ -1,0 +1,9 @@
+" Author: evanmcneely <evanmcneely@me.com>
+" Description: Pre-processing rules for JavaScript files.
+
+function! neural#pre_process#javascript#Process(buffer, input) abort
+    let a:input.prompt = 'You are working in JavaScript. '
+    \   . a:input.prompt 
+    \   . '\n\n"""\n\n' 
+    \   . a:buffer
+endfunction

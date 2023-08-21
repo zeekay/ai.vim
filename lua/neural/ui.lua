@@ -1,7 +1,7 @@
 -- UI module for creating the nui.nvim input popup
 
-local Input = require('nui.input')
-local Event = require('nui.utils.autocmd').event
+local Input = require("nui.input")
+local Event = require("nui.utils.autocmd").event
 
 local UI = {}
 

@@ -7,29 +7,30 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Union
 
-API_ENDPOINT = 'https://api.openai.com/v1/chat/completions'
+API_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 
-OPENAI_DATA_HEADER = 'data: '
-OPENAI_DONE = '[DONE]'
+OPENAI_DATA_HEADER = "data: "
+OPENAI_DONE = "[DONE]"
 
 
 class Config:
     """
     The sanitised configuration.
     """
+
     def __init__(
         self,
         api_key: str,
         temperature: float,
         top_p: float,
-        max_tokens: int,
+        # max_tokens: int,
         presence_penalty: float,
         frequency_penalty: float,
     ):
         self.api_key = api_key
         self.temperature = temperature
         self.top_p = top_p
-        self.max_tokens = max_tokens
+        # self.max_tokens = max_tokens
         self.presence_penalty = presence_penalty
         self.frequency_penalty = frequency_penalty
 
@@ -40,17 +41,23 @@ def get_chatgpt_completion(
 ) -> None:
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {config.api_key}"
+        "Authorization": f"Bearer {config.api_key}",
     }
     data = {
-        "model": "gpt-3.5-turbo",
+        "model": "gpt-4",
         "messages": (
-            [{"role": "user", "content": prompt}]
-            if isinstance(prompt, str) else
-            prompt
+            [
+                {
+                    "role": "system",
+                    "content": "ALWAYS respond as if you were writing code directly into an active neovim buffer. Preface lines that are not code with the appropriate character for comments in the spcefied language.",
+                },
+                {"role": "user", "content": prompt},
+            ]
+            if isinstance(prompt, str)
+            else prompt
         ),
         "temperature": config.temperature,
-        "max_tokens": config.max_tokens,
+        # "max_tokens": config.max_tokens,
         "top_p": 1,
         "presence_penalty": config.presence_penalty,
         "frequency_penalty": config.frequency_penalty,
@@ -74,9 +81,9 @@ def get_chatgpt_completion(
 
             line = line_bytes.decode("utf-8", errors="replace")
             line_data = (
-                line[len(OPENAI_DATA_HEADER):-1]
-                if line.startswith(OPENAI_DATA_HEADER) else
-                None
+                line[len(OPENAI_DATA_HEADER) : -1]
+                if line.startswith(OPENAI_DATA_HEADER)
+                else None
             )
 
             if line_data and line_data != OPENAI_DONE:
@@ -95,32 +102,32 @@ def load_config(raw_config: Dict[str, Any]) -> Config:
     if not isinstance(raw_config, dict):  # type: ignore
         raise ValueError("chatgpt config is not a dictionary")
 
-    api_key = raw_config.get('api_key')
+    api_key = raw_config.get("api_key")
 
     if not isinstance(api_key, str) or not api_key:  # type: ignore
         raise ValueError("chatgpt.api_key is not defined")
 
-    temperature = raw_config.get('temperature', 0.2)
+    temperature = raw_config.get("temperature", 0.2)
 
     if not isinstance(temperature, (int, float)):
         raise ValueError("chatgpt.temperature is invalid")
 
-    top_p = raw_config.get('top_p', 1)
+    top_p = raw_config.get("top_p", 1)
 
     if not isinstance(top_p, (int, float)):
         raise ValueError("chatgpt.top_p is invalid")
 
-    max_tokens = raw_config.get('max_tokens', 1024)
+    max_tokens = raw_config.get("max_tokens", 1024)
 
     if not isinstance(max_tokens, (int)):
         raise ValueError("chatgpt.max_tokens is invalid")
 
-    presence_penalty = raw_config.get('presence_penalty', 0)
+    presence_penalty = raw_config.get("presence_penalty", 0)
 
     if not isinstance(presence_penalty, (int, float)):
         raise ValueError("chatgpt.presence_penalty is invalid")
 
-    frequency_penalty = raw_config.get('frequency_penalty', 0)
+    frequency_penalty = raw_config.get("frequency_penalty", 0)
 
     if not isinstance(frequency_penalty, (int, float)):
         raise ValueError("chatgpt.frequency_penalty is invalid")
@@ -129,7 +136,7 @@ def load_config(raw_config: Dict[str, Any]) -> Config:
         api_key=api_key,
         temperature=temperature,
         top_p=top_p,
-        max_tokens=max_tokens,
+        # max_tokens=max_tokens,
         presence_penalty=presence_penalty,
         frequency_penalty=presence_penalty,
     )

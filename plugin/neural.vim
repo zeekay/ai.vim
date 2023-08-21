@@ -30,6 +30,8 @@ if !s:has_features
 endif
 
 command! -nargs=? Neural :call neural#Prompt(<q-args>)
+command! -nargs=? NeuralWithBuffers :call neural#PromptWithBuffers(<q-args>)
 
 " <Plug> mappings for commands
 nnoremap <Plug>(neural_prompt) :call neural#OpenPrompt()<Return>
+nnoremap <Plug>(neural_prompt_with_file_picker) :call neural#PromptWithBuffers()<Return>
