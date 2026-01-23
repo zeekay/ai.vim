@@ -270,7 +270,142 @@
   </main>
 
   <footer>
-    <p>Built with ❤️ by <a href="https://hanzo.ai">Hanzo AI</a> · <a href="https://github.com/hanzoai">GitHub</a></p>
+    <div class="footer-content">
+      <div class="footer-section">
+        <h4>Hanzo AI</h4>
+        <ul>
+          <li><a href="https://hanzo.ai">Website</a></li>
+          <li><a href="https://docs.hanzo.ai">Documentation</a></li>
+          <li><a href="https://github.com/hanzoai">GitHub</a></li>
+          <li><a href="https://hanzoai.github.io">Open Source</a></li>
+        </ul>
+      </div>
+      <div class="footer-section">
+        <h4>Editor Plugins</h4>
+        <ul>
+          <li><a href="https://hanzoai.github.io/hanzo.vim">hanzo.vim</a></li>
+          <li><a href="https://hanzoai.github.io/hanzo.el">hanzo.el</a></li>
+          <li><a href="https://hanzoai.github.io/ide-extension">VS Code / JetBrains</a></li>
+          <li><a href="https://hanzoai.github.io/browser-extension">Browser Extension</a></li>
+        </ul>
+      </div>
+      <div class="footer-section">
+        <h4>Ecosystem</h4>
+        <ul>
+          <li><a href="https://github.com/hanzoai/mcp">MCP Tools</a></li>
+          <li><a href="https://github.com/hanzoai/llm">LLM Gateway</a></li>
+          <li><a href="https://github.com/hanzoai/agent">Agent SDK</a></li>
+          <li><a href="https://luxfi.github.io">Lux Network</a></li>
+        </ul>
+      </div>
+      <div class="footer-section">
+        <h4>Community</h4>
+        <ul>
+          <li><a href="https://discord.gg/hanzo">Discord</a></li>
+          <li><a href="https://twitter.com/hanaborobot">Twitter</a></li>
+          <li><a href="https://zooai.github.io">Zoo AI</a></li>
+          <li><a href="https://zoo-labs.github.io">Zoo Labs</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div class="footer-logo">
+        <svg viewBox="0 0 67 67" xmlns="http://www.w3.org/2000/svg" width="24" height="24">
+          <path d="M22.21 67V44.6369H0V67H22.21Z" fill="currentColor"/>
+          <path d="M66.7038 22.3184H22.2534L0.0878906 44.6367H44.4634L66.7038 22.3184Z" fill="currentColor"/>
+          <path d="M22.21 0H0V22.3184H22.21V0Z" fill="currentColor"/>
+          <path d="M66.7198 0H44.5098V22.3184H66.7198V0Z" fill="currentColor"/>
+          <path d="M66.7198 67V44.6369H44.5098V67H66.7198Z" fill="currentColor"/>
+        </svg>
+        <span>Hanzo AI · Techstars '17</span>
+      </div>
+      <p>© 2024 Hanzo AI Inc. MIT License.</p>
+    </div>
   </footer>
+
+  <style>
+    footer {
+      padding: 48px 24px 32px;
+      border-top: 1px solid var(--border);
+    }
+
+    .footer-content {
+      max-width: 1200px;
+      margin: 0 auto 32px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 32px;
+    }
+
+    .footer-section h4 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .footer-section ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .footer-section li {
+      margin-bottom: 8px;
+    }
+
+    .footer-section a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 14px;
+      transition: color 0.2s;
+    }
+
+    .footer-section a:hover {
+      color: var(--brand);
+    }
+
+    .footer-bottom {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding-top: 24px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .footer-logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    .footer-logo svg {
+      color: var(--brand);
+    }
+
+    .footer-bottom p {
+      color: var(--text-muted);
+      font-size: 13px;
+      margin: 0;
+    }
+
+    @media (max-width: 640px) {
+      .footer-content {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .footer-bottom {
+        flex-direction: column;
+        text-align: center;
+      }
+    }
+  </style>
 </body>
 </html>
