@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create release archive
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mkdir -p dist
+          # Create vim package (exclude .git and dev files)
+          tar -czvf dist/hanzo.vim-${VERSION}.tar.gz \
+            --exclude='.git*' \
+            --exclude='dist' \
+            --exclude='.github' \
+            autoload plugin lua python3 neural_sources doc README.md LICENSE.md
+
+          # Create zip for Windows users
+          zip -r dist/hanzo.vim-${VERSION}.zip \
+            autoload plugin lua python3 neural_sources doc README.md LICENSE.md \
+            -x '*.git*'
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/hanzo.vim-*.tar.gz
+            dist/hanzo.vim-*.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
