@@ -1,0 +1,13 @@
+title: hanzo.vim
+description: AI-powered Vim/Neovim plugin
+url: https://hanzoai.github.io
+baseurl: /hanzo.vim
+remote_theme: pages-themes/midnight@v0.2.0
+plugins:
+  - jekyll-remote-theme
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
