@@ -1,18 +1,25 @@
-# ⚡ Neural
+# hanzo.vim
 
-[![Vim](https://img.shields.io/badge/VIM-%2311AB00.svg?style=for-the-badge&logo=vim&logoColor=white)](https://www.vim.org/) [![Neovim](https://img.shields.io/badge/NeoVim-%2357A143.svg?&style=for-the-badge&logo=neovim&logoColor=white)](https://neovim.io/) [![CI](https://img.shields.io/github/actions/workflow/status/dense-analysis/neural/main.yml?branch=main&label=CI&logo=github&style=for-the-badge)](https://github.com/dense-analysis/neural/actions?query=event%3Apush+workflow%3ACI+branch%3Amain++) [![Join the Dense Analysis Discord server](https://img.shields.io/badge/chat-Discord-5865F2?style=for-the-badge&logo=appveyor)](https://discord.gg/5zFD6pQxDk)
+[![Vim](https://img.shields.io/badge/VIM-%2311AB00.svg?style=for-the-badge&logo=vim&logoColor=white)](https://www.vim.org/) [![Neovim](https://img.shields.io/badge/NeoVim-%2357A143.svg?&style=for-the-badge&logo=neovim&logoColor=white)](https://neovim.io/)
 
-A ChatGPT Vim plugin, an OpenAI Neovim plugin, and so much more! Neural integrates various machine learning tools so you can let AI write code for you in Vim/Neovim, among other helpful things.
+Fork of [dense-analysis/neural](https://github.com/dense-analysis/neural) with comprehensive Hanzo AI integration.
+
+A multi-provider AI plugin for Vim/Neovim supporting Claude, GPT-4, Gemini, Ollama, and more. Includes MCP/ZAP bridge for AI agent control and REPL integration.
 
 ## 🌟 Features
 
+### Neural Base
 * Generate text easily `:Neural write a story`
 * Support for multiple machine learning models
-* Focused on privacy and avoiding leaking data to third parties
 * Easily ask AI to explain code or paragraphs `:NeuralExplain`
 * Compatible with Vim 8.0+ & Neovim 0.8+
-* Supported on Linux, Mac OSX, and Windows
-* Only dependency is Python 3.7+
+
+### Hanzo Extensions
+* **Multi-Provider**: Claude, GPT-4, Gemini, Ollama, any OpenAI-compatible API
+* **LLM Gateway**: Unified proxy for 100+ providers via `http://localhost:4000`
+* **MCP/ZAP Bridge**: WebSocket bridge for AI agent control (hanzo-mcp compatible)
+* **REPL Integration**: Jupyter kernel support for interactive code evaluation
+* **Extended Commands**: Complete, Explain, Refactor, Fix, Tests, Docs, Review
 
 Experience lightning-fast code generation and completion with asynchronous
 streaming.
@@ -109,6 +116,32 @@ Try typing `:Neural say hello`, and if all goes well the machine learning
 tool will say "hello" to you in the current buffer. Type `:help neural` to
 see the full documentation.
 
+### Hanzo Configuration
+
+```vim
+" Model and provider
+let g:hanzo_model = 'claude-sonnet-4-20250514'
+let g:hanzo_provider = 'anthropic'  " anthropic, openai, google, ollama
+
+" Mode selection
+let g:hanzo_mode = 'api'     " api, mcp, or ollama
+
+" LLM Gateway (optional)
+let g:hanzo_llm_gateway = 'http://localhost:4000'
+
+" Enable default keybinds
+let g:hanzo_set_default_keybinds = 1
+```
+
+```lua
+-- Neovim Lua config
+require('hanzo').setup({
+    model = 'claude-sonnet-4-20250514',
+    provider = 'anthropic',
+    mode = 'api',
+})
+```
+
 ## 🛠️ Commands
 
 ### `:NeuralExplain`
@@ -128,6 +161,37 @@ another keybind for `<C-c>` (CTRL+C) is defined in normal mode, Neural will run
 the stop command by default when you enter that key combination. The default
 keybind can be disabled by setting `g:neural.set_default_keybinds` to any falsy
 value. You can set a keybind to stop Neural by mapping to `<Plug>(neural_stop)`.
+
+### Hanzo Commands
+
+| Command | Description |
+|---------|-------------|
+| `:Hanzo <prompt>` | Send prompt to AI |
+| `:H <prompt>` | Short alias for `:Hanzo` |
+| `:HanzoComplete` | Complete code at cursor |
+| `:HanzoExplain` | Explain selected code |
+| `:HanzoRefactor <instruction>` | Refactor with instructions |
+| `:HanzoFix` | Fix issues in selection |
+| `:HanzoTests` | Generate tests |
+| `:HanzoDocs` | Generate documentation |
+| `:HanzoReview` | Code review |
+| `:HanzoStart` | Start MCP/ZAP bridge |
+| `:HanzoStop` | Stop bridge |
+| `:HanzoModel <model>` | Set active model |
+| `:HanzoMode <mode>` | Set mode (api/mcp/ollama) |
+
+### Hanzo Keybindings
+
+| Mapping | Mode | Action |
+|---------|------|--------|
+| `<Leader>h` | Normal | Open prompt |
+| `<Leader>hc` | Normal | Complete |
+| `<Leader>he` | Visual | Explain |
+| `<Leader>hr` | Visual | Refactor |
+| `<Leader>hf` | Visual | Fix |
+| `<Leader>ht` | Visual | Tests |
+| `<Leader>hd` | Visual | Docs |
+| `<Leader>hv` | Visual | Review |
 
 ## 📜 Acknowledgements
 
