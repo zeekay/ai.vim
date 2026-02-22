@@ -4,7 +4,7 @@
 
 Fork of [dense-analysis/neural](https://github.com/dense-analysis/neural) with comprehensive Hanzo AI integration.
 
-A multi-provider AI plugin for Vim/Neovim supporting Claude, GPT-4, Gemini, Ollama, and more. Includes MCP/ZAP bridge for AI agent control and REPL integration.
+A multi-provider AI coding agent plugin for Vim/Neovim supporting Claude, GPT-4, Gemini, Ollama, and more. Includes MCP/ZAP bridge for AI agent control and REPL integration.
 
 ## 🌟 Features
 
@@ -13,6 +13,8 @@ A multi-provider AI plugin for Vim/Neovim supporting Claude, GPT-4, Gemini, Olla
 * Support for multiple machine learning models
 * Easily ask AI to explain code or paragraphs `:NeuralExplain`
 * Compatible with Vim 8.0+ & Neovim 0.8+
+* Supported on Linux, Mac OSX, and Windows
+* Only dependency is Python 3.10+ (required for security and libraries)
 
 ### Hanzo Extensions
 * **Multi-Provider**: Claude, GPT-4, Gemini, Ollama, any OpenAI-compatible API
@@ -25,8 +27,7 @@ Experience lightning-fast code generation and completion with asynchronous
 streaming.
 
 Edit any kind of text document. It can be used to generate Python docstrings,
-fix comments spelling/grammar mistakes, generate ideas and much more. See
-[examples from OpenAI](https://beta.openai.com/examples) for a start.
+fix comments spelling/grammar mistakes, generate ideas and much more.
 
 ## 🔌 Plugin Integrations
 
@@ -83,33 +84,37 @@ Plugin 'dense-analysis/neural'
 ## 🚀 Usage
 
 You will need to configure a third party machine learning tool for Neural to
-interact with. OpenAI is Neural's default data source, and one of the easiest
+interact with. OpenAI is Neural's default data provider, and one of the easiest
 to configure.
 
 You will need to obtain an [OpenAI API key](https://beta.openai.com/signup/).
-Once you have your key, configure Neural to use that key, whether in a Vim
-script or in a Lua config.
-
-```vim
-" Configure Neural like so in Vimscript
-let g:neural = {
-\   'source': {
-\       'openai': {
-\           'api_key': $OPENAI_API_KEY,
-\       },
-\   },
-\}
-```
+Once you have your key, configure Neural to use that key, whether in a Lua
+config or in Vimscript.
 
 ```lua
 -- Configure Neural like so in Lua
 require('neural').setup({
-    source = {
-        openai = {
-            api_key = vim.env.OPENAI_API_KEY,
+    providers = {
+        {
+            openai = {
+                api_key = vim.env.OPENAI_API_KEY,
+            },
         },
     },
 })
+```
+
+```vim
+" Configure Neural like so in Vimscript
+let g:neural = {
+\   'providers': [
+\       {
+\           'openai': {
+\               'api_key': $OPENAI_API_KEY,
+\           },
+\       },
+\   ],
+\}
 ```
 
 Try typing `:Neural say hello`, and if all goes well the machine learning
@@ -140,6 +145,35 @@ require('hanzo').setup({
     provider = 'anthropic',
     mode = 'api',
 })
+```
+
+You can configure the `url` for an OpenAI provider to run Neural with local
+models or other servers that offer an OpenAI compatible API, for example:
+
+```lua
+-- Configure Neural like so in Lua
+require('neural').setup({
+    providers = {
+        {
+            openai = {
+                url = 'http://localhost:7860',
+            },
+        },
+    },
+})
+```
+
+```vim
+" Configure Neural like so in Vimscript
+let g:neural = {
+\   'providers': [
+\       {
+\           'openai': {
+\               'url': 'http://localhost:7860',
+\           },
+\       },
+\   ],
+\}
 ```
 
 ## 🛠️ Commands
@@ -192,6 +226,22 @@ value. You can set a keybind to stop Neural by mapping to `<Plug>(neural_stop)`.
 | `<Leader>ht` | Visual | Tests |
 | `<Leader>hd` | Visual | Docs |
 | `<Leader>hv` | Visual | Review |
+
+## 🛠️ Development
+
+To get started developing Neural, you will need to run the following commands,
+after first installing and correctly configuring
+[pyenv](https://github.com/pyenv/pyenv).
+
+```sh
+pyenv install
+pip install uv
+uv sync
+```
+
+You should then get all of the linters and static analysis tools, and you can
+run tests with `pytest` from virtualenv. We recommend using
+[ALE](https://github.com/dense-analysis/ale) to run linters for this project.
 
 ## 📜 Acknowledgements
 
