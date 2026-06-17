@@ -1,4 +1,4 @@
-# LLM.md - Hanzo Hanzo.Vim
+# Hanzo Hanzo.Vim
 
 ## Overview
 A coding agent
