@@ -11,7 +11,7 @@ on:  # yamllint disable-line rule:truthy
 
 jobs:
   build_image:
-    runs-on: ubuntu-latest
+    runs-on: hanzo-build-linux-amd64
     steps:
       - uses: actions/checkout@v2
       - name: Build docker run image
@@ -22,7 +22,7 @@ jobs:
         run: ./run-tests --build-image
   test_neural:
     needs: build_image
-    runs-on: ubuntu-latest
+    runs-on: hanzo-build-linux-amd64
     strategy:
       matrix:
         job-type:
