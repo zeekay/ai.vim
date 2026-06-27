@@ -15,6 +15,11 @@ M.config = {
     -- Model settings
     model = "claude-sonnet-4-20250514",
     mode = "api",
+    -- Local-first routing (native engine vs cloud account)
+    route = "auto", -- auto | local | cloud
+    local_url = "http://127.0.0.1:36900",
+    local_model = "default",
+    cloud_url = "https://api.hanzo.ai",
     -- Keybinds
     set_keymaps = false,
 }
@@ -26,6 +31,10 @@ function M.setup(opts)
     -- Sync with Vim globals
     vim.g.hanzo_model = M.config.model
     vim.g.hanzo_mode = M.config.mode
+    vim.g.hanzo_route = M.config.route
+    vim.g.hanzo_local_url = M.config.local_url
+    vim.g.hanzo_local_model = M.config.local_model
+    vim.g.hanzo_cloud_url = M.config.cloud_url
 
     if M.config.set_keymaps then
         M.setup_keymaps()

@@ -17,8 +17,11 @@ A multi-provider AI coding agent plugin for Vim/Neovim supporting Claude, GPT-4,
 * Only dependency is Python 3.10+ (required for security and libraries)
 
 ### Hanzo Extensions
+* **Local-first routing**: `:AI` uses the native local Hanzo engine when it's
+  running and falls back to your cloud account otherwise (see below)
 * **Multi-Provider**: Claude, GPT-4, Gemini, Ollama, any OpenAI-compatible API
-* **LLM Gateway**: Unified proxy for 100+ providers via `http://localhost:4000`
+* **Cloud account**: the Hanzo gateway at `https://api.hanzo.ai` proxies 100+
+  providers with your account credentials
 * **MCP/ZAP Bridge**: WebSocket bridge for AI agent control (hanzo-mcp compatible)
 * **REPL Integration**: Jupyter kernel support for interactive code evaluation
 * **Extended Commands**: Complete, Explain, Refactor, Fix, Tests, Docs, Review
@@ -121,6 +124,40 @@ Try typing `:Neural say hello`, and if all goes well the machine learning
 tool will say "hello" to you in the current buffer. Type `:help neural` to
 see the full documentation.
 
+### Local-first routing (local engine vs cloud)
+
+`:AI` (and `:Hanzo`) talk to the **native local Hanzo engine** when it is
+running, and fall back to your **cloud account** otherwise — *native node if
+running, else cloud account*. The local engine is the OpenAI-compatible server
+the **Hanzo desktop app** spawns and keeps alive (its node manager); hanzo.vim
+does not start or stop it. When the engine is up, requests go straight to it
+with **no auth** and stay on your machine.
+
+Routing is controlled by `g:hanzo_route`:
+
+| `g:hanzo_route` | Behaviour |
+|-----------------|-----------|
+| `auto` (default) | Probe the local engine's `/health`; use it if up, else cloud. An explicitly chosen cloud vendor (`g:hanzo_provider` = `anthropic`/`openai`) with a resolved credential takes precedence. |
+| `local` | Always the native local engine (no auth). |
+| `cloud` | Always the cloud account (resolved credentials). |
+
+```vim
+" Local-first routing
+let g:hanzo_route = 'auto'                          " auto | local | cloud
+let g:hanzo_local_url = 'http://127.0.0.1:36900'    " native engine
+let g:hanzo_local_model = 'default'                 " model the engine serves
+let g:hanzo_cloud_url = 'https://api.hanzo.ai'      " cloud account gateway
+" Optional: point the cloud base at a local gateway instead of api.hanzo.ai
+" let g:hanzo_llm_gateway = 'http://localhost:4000'
+```
+
+`:AIStatus` shows which route is active right now, e.g.
+`route=local engine http://127.0.0.1:36900 (default) [UP]` or
+`route=cloud provider=openai (cloud https://api.hanzo.ai)`.
+
+The health probe is cached for a few seconds, so typing does not re-probe the
+engine on every keystroke.
+
 ### Hanzo Configuration
 
 ```vim
@@ -130,9 +167,6 @@ let g:hanzo_provider = 'anthropic'  " anthropic, openai, google, ollama
 
 " Mode selection
 let g:hanzo_mode = 'api'     " api, mcp, or ollama
-
-" LLM Gateway (optional)
-let g:hanzo_llm_gateway = 'http://localhost:4000'
 
 " Enable default keybinds
 let g:hanzo_set_default_keybinds = 1
@@ -252,7 +286,7 @@ value. You can set a keybind to stop Neural by mapping to `<Plug>(neural_stop)`.
 | `:HanzoMode <mode>` | Set mode (api/mcp/ollama) |
 | `:AILogin [vendor]` | Log in: Claude / ChatGPT / Hanzo / API key |
 | `:AILogout` | Clear shared credentials (`dev logout`) |
-| `:AIStatus` (`:AIWhoami`) | Show login status + active provider |
+| `:AIStatus` (`:AIWhoami`) | Show active route (local/cloud) + login status + provider |
 | `:HanzoLogin` | Alias for `:AILogin hanzo` |
 
 ### Hanzo Keybindings

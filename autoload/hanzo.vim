@@ -22,8 +22,33 @@ function! hanzo#GetConfig() abort
     \   'debug': get(g:, 'hanzo_debug', 0),
     \   'model': get(g:, 'hanzo_model', 'claude-sonnet-4-20250514'),
     \   'provider': get(g:, 'hanzo_provider', 'anthropic'),
+    \   'provider_explicit': get(g:, 'hanzo_provider_explicit', 0),
     \   'mode': get(g:, 'hanzo_mode', 'api'),
-    \   'llm_gateway': get(g:, 'hanzo_llm_gateway', 'http://localhost:4000'),
+    \   'route': get(g:, 'hanzo_route', 'auto'),
+    \   'local_url': get(g:, 'hanzo_local_url', 'http://127.0.0.1:36900'),
+    \   'local_model': get(g:, 'hanzo_local_model', 'default'),
+    \   'cloud_url': get(g:, 'hanzo_cloud_url', 'https://api.hanzo.ai'),
+    \   'llm_gateway': get(g:, 'hanzo_llm_gateway', ''),
+    \}
+endfunction
+
+" Build the Neural provider entry for the Hanzo provider, carrying the routing
+" config the Python provider needs (g:hanzo_route + the endpoints). This is the
+" single source for both :AI (default registration) and :Hanzo (hanzo#Chat).
+function! hanzo#NeuralProvider() abort
+    let l:config = hanzo#GetConfig()
+
+    return {
+    \   'type': 'hanzo',
+    \   'mode': l:config.mode,
+    \   'provider': l:config.provider,
+    \   'provider_explicit': l:config.provider_explicit,
+    \   'model': l:config.model,
+    \   'route': l:config.route,
+    \   'local_url': l:config.local_url,
+    \   'local_model': l:config.local_model,
+    \   'cloud_url': l:config.cloud_url,
+    \   'llm_gateway': l:config.llm_gateway,
     \}
 endfunction
 
@@ -334,20 +359,12 @@ endfunction
 " ============================================================================
 
 function! hanzo#Chat(prompt) abort
-    " Configure Neural to use Hanzo provider
-    let l:config = hanzo#GetConfig()
-
-    " Set up Neural config
+    " Route :Hanzo/:H through the Hanzo provider with local-first routing.
     if !exists('g:neural')
         let g:neural = {}
     endif
 
-    let g:neural.providers = [{
-    \   'type': 'hanzo',
-    \   'model': l:config.model,
-    \   'mode': l:config.mode,
-    \   'url': l:config.llm_gateway,
-    \}]
+    let g:neural.providers = [hanzo#NeuralProvider()]
 
     " Forward to Neural
     call neural#Prompt(a:prompt)
@@ -671,6 +688,8 @@ function! s:LoginApiKey(provider) abort
     endif
 
     let g:hanzo_provider = l:provider
+    " Logging in is a deliberate provider choice: let auto-routing honor it.
+    let g:hanzo_provider_explicit = 1
 
     if s:HasDev()
         " Pipe the key via stdin: never on the command line or in history.
@@ -695,6 +714,8 @@ function! s:LoginOAuth(vendor) abort
     let g:hanzo_provider = s:NormalizeVendor(a:vendor) ==# 'hanzo'
     \   ? 'hanzo'
     \   : 'openai'
+    " Logging in is a deliberate provider choice: let auto-routing honor it.
+    let g:hanzo_provider_explicit = 1
     echo 'Starting ' . a:vendor . ' login via '
     \   . s:DevCli() . ' (device-code)...'
     call s:RunTerminal(hanzo#LoginArgv(a:vendor))
@@ -752,8 +773,47 @@ function! hanzo#Logout() abort
     endif
 endfunction
 
-" :AIStatus / :AIWhoami -- show login state and the active provider.
+" Ask the Python provider which endpoint a request would use right now (it
+" probes the local engine /health). Returns {} when it cannot be determined.
+function! hanzo#ResolveRoute() abort
+    let l:script = s:script_dir . '/src/neural/provider/hanzo.py'
+
+    if !filereadable(l:script)
+        return {}
+    endif
+
+    let l:input = json_encode({'config': hanzo#NeuralProvider()})
+    let l:out = system('python3 ' . shellescape(l:script) . ' --resolve', l:input)
+
+    if v:shell_error != 0 || empty(l:out)
+        return {}
+    endif
+
+    try
+        let l:parsed = json_decode(l:out)
+    catch
+        return {}
+    endtry
+
+    return type(l:parsed) == v:t_dict ? l:parsed : {}
+endfunction
+
+" :AIStatus / :AIWhoami -- show the active route, login state, and provider.
 function! hanzo#Status() abort
+    let l:route = hanzo#ResolveRoute()
+
+    if empty(l:route)
+        echo 'route: unknown (could not probe local engine)'
+    elseif get(l:route, 'route', '') ==# 'local'
+        echo printf('route=local engine %s (%s) [UP]',
+        \   get(l:route, 'base_url', ''), get(l:route, 'model', ''))
+    else
+        let l:note = get(l:route, 'authenticated', v:false)
+        \   ? '' : ' [no credential]'
+        echo printf('route=cloud provider=%s (cloud %s)%s',
+        \   get(l:route, 'provider', ''), get(l:route, 'base_url', ''), l:note)
+    endif
+
     if s:HasDev()
         " `dev login status` reports state only; it never prints the secret.
         echo system(s:DevCli() . ' login status')

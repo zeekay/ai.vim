@@ -9,6 +9,9 @@ CONTENTS                                                       *hanzo-contents*
     1.3 Shared credentials ...................... |hanzo-ailogin-credentials|
     1.4 Headless / SSH .......................... |hanzo-ailogin-headless|
     1.5 Configuration ........................... |hanzo-ailogin-config|
+  2. Local-first routing ........................ |hanzo-routing|
+    2.1 g:hanzo_route ........................... |g:hanzo_route|
+    2.2 Endpoints ............................... |hanzo-routing-endpoints|
 
 ===============================================================================
 1. AI Login                                                     *hanzo-ailogin*
@@ -40,7 +43,11 @@ authenticated.
 `:AIStatus`                                                         *:AIStatus*
 `:AIWhoami`                                                         *:AIWhoami*
 
-  Shows `dev login status` and the active provider (|g:hanzo_provider|).
+  Shows the active route (local vs cloud, see |hanzo-routing|), then
+  `dev login status` and the active provider (|g:hanzo_provider|). Example: >
+      route=local engine http://127.0.0.1:36900 (default) [UP]
+      route=cloud provider=openai (cloud https://api.hanzo.ai)
+<
 
 `:HanzoLogin`                                                     *:HanzoLogin*
 
@@ -102,6 +109,59 @@ device-code flow automatically. The code and verification URL render in a
 If `g:ai_cli` is not on $PATH, `:AILogin` falls back to prompting for an API
 key, stores it where the provider reads it, and notes that the `dev` CLI is
 needed for OAuth logins.
+
+===============================================================================
+2. Local-first routing                                          *hanzo-routing*
+
+`:AI` and `:Hanzo` talk to the native local Hanzo engine when it is running and
+fall back to your cloud account otherwise -- "native node if running, else
+cloud account". The local engine is the OpenAI-compatible server the Hanzo
+desktop app spawns and keeps alive (its node manager); hanzo.vim never starts
+or stops it. When the engine is up, requests go to it directly with NO auth and
+stay on your machine. See the active choice at any time with |:AIStatus|.
+
+By default (no `g:neural` providers configured) hanzo.vim registers the Hanzo
+provider as Neural's provider, so `:AI` is local-first out of the box.
+
+-------------------------------------------------------------------------------
+2.1 g:hanzo_route                                              *g:hanzo_route*
+
+`g:hanzo_route`                                              (default: "auto")
+
+  auto   Probe the local engine's /health; use it if up, else the cloud
+         account. An explicitly chosen cloud vendor (|g:hanzo_provider| set to
+         "anthropic"/"openai") with a resolved credential takes precedence, so
+         a deliberate cloud choice still wins.
+  local  Always the native local engine (no auth).
+  cloud  Always the cloud account (resolved credentials). >
+
+      let g:hanzo_route = 'auto'
+<
+The /health probe is cached for a few seconds so typing does not re-probe the
+engine on every keystroke.
+
+-------------------------------------------------------------------------------
+2.2 Endpoints                                        *hanzo-routing-endpoints*
+
+                                                            *g:hanzo_local_url*
+`g:hanzo_local_url`                       (default: "http://127.0.0.1:36900")
+  The native local engine's OpenAI-compatible base URL.
+
+                                                          *g:hanzo_local_model*
+`g:hanzo_local_model`                                    (default: "default")
+  The model id the local engine serves.
+
+                                                            *g:hanzo_cloud_url*
+`g:hanzo_cloud_url`                          (default: "https://api.hanzo.ai")
+  The cloud account gateway used on the cloud route. Authenticated with the
+  resolved account credentials (see |hanzo-ailogin-credentials|).
+
+                                                         *g:hanzo_llm_gateway*
+`g:hanzo_llm_gateway`                                            (default: "")
+  Optional override of the cloud base, e.g. a local gateway on
+  "http://localhost:4000". Empty means use |g:hanzo_cloud_url|.
+
+All endpoints are OpenAI-compatible: `POST {base}/v1/chat/completions`.
 
 ===============================================================================
  vim:tw=78:ts=8:ft=help:norl:
