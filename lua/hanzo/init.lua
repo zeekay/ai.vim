@@ -19,6 +19,10 @@ M.config = {
     route = "auto", -- auto | local | cloud
     local_url = "http://127.0.0.1:36900",
     local_model = "default",
+    -- Additional local backends detected (in order); first one up wins.
+    ollama_url = "http://127.0.0.1:11434",
+    lmstudio_url = "http://127.0.0.1:1234",
+    local_backends = { "hanzo", "ollama", "lmstudio" },
     cloud_url = "https://api.hanzo.ai",
     -- Keybinds
     set_keymaps = false,
@@ -34,6 +38,9 @@ function M.setup(opts)
     vim.g.hanzo_route = M.config.route
     vim.g.hanzo_local_url = M.config.local_url
     vim.g.hanzo_local_model = M.config.local_model
+    vim.g.hanzo_ollama_url = M.config.ollama_url
+    vim.g.hanzo_lmstudio_url = M.config.lmstudio_url
+    vim.g.hanzo_local_backends = M.config.local_backends
     vim.g.hanzo_cloud_url = M.config.cloud_url
 
     if M.config.set_keymaps then

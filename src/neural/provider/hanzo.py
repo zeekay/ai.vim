@@ -18,6 +18,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from typing import Any, NamedTuple, cast
 
 # Try to import websockets for MCP/ZAP bridge
@@ -29,22 +30,33 @@ except ImportError:
 
 # Constants
 #
-# Local-first routing endpoints. The native Hanzo engine (kept alive by the
-# Hanzo desktop app's node manager) speaks the OpenAI-compatible API on :36900
-# and needs no auth. The cloud account is the Hanzo gateway, reached with the
-# resolved account credentials.
-HANZO_LOCAL_URL = "http://127.0.0.1:36900"   # native local engine
-HANZO_LOCAL_MODEL = "default"                # model id the local engine serves
+# Local-first routing endpoints. Several OpenAI-compatible local engines may be
+# running; we detect them in order and route to the first that answers (no
+# auth). The Hanzo engine (kept alive by the Hanzo desktop app's node manager)
+# serves on :36900, Ollama on :11434, LM Studio on :1234. The cloud account is
+# the Hanzo gateway, reached with the resolved account credentials.
+HANZO_LOCAL_URL = "http://127.0.0.1:36900"   # native Hanzo engine
+HANZO_LOCAL_MODEL = "default"                # model id the Hanzo engine serves
+HANZO_OLLAMA_URL = "http://127.0.0.1:11434"  # Ollama OpenAI-compatible server
+HANZO_LMSTUDIO_URL = "http://127.0.0.1:1234"  # LM Studio server
 HANZO_CLOUD_URL = "https://api.hanzo.ai"     # cloud account gateway
 HANZO_MCP_BRIDGE = "ws://localhost:9228"     # Vim bridge port
 DATA_HEADER = "data: "
 DONE_MARKER = "[DONE]"
 ANTHROPIC_VERSION = "2023-06-01"
 
-# A /health probe result is trusted for this long (per URL), so a burst of
-# requests/keystrokes does not re-probe the local engine each time.
-_HEALTH_TTL_SECONDS = 5.0
-_health_cache: "dict[str, tuple[float, bool]]" = {}
+# Order local backends are probed in; the first one that is up wins for the
+# local/auto routes. Mirrors the g:hanzo_local_backends vim default.
+_DEFAULT_LOCAL_BACKENDS = ("hanzo", "ollama", "lmstudio")
+
+# A probe result is trusted for this long (per URL), so a burst of
+# requests/keystrokes does not re-probe a local engine each time. The probe is
+# a single GET whose (status, body) is cached: the status tells us a backend is
+# up, the body carries its model list.
+_PROBE_TIMEOUT = 0.5
+_PROBE_TTL_SECONDS = 5.0
+_MAX_PROBE_BYTES = 1 << 20  # cap a probe body read at 1 MiB
+_probe_cache: "dict[str, tuple[float, tuple[int, bytes]]]" = {}
 
 # Cloud vendors whose explicit selection (with a resolved credential) wins
 # over the local engine even in auto mode.
@@ -239,6 +251,9 @@ class HanzoConfig:
         route: str = "auto",  # auto | local | cloud
         local_url: str = HANZO_LOCAL_URL,
         local_model: str = HANZO_LOCAL_MODEL,
+        ollama_url: str = HANZO_OLLAMA_URL,
+        lmstudio_url: str = HANZO_LMSTUDIO_URL,
+        local_backends: "tuple[str, ...] | None" = None,
         cloud_url: str = HANZO_CLOUD_URL,
         gateway: str = "",  # optional cloud-base override (e.g. :4000)
 
@@ -262,6 +277,13 @@ class HanzoConfig:
         self.route = route
         self.local_url = local_url
         self.local_model = local_model
+        self.ollama_url = ollama_url
+        self.lmstudio_url = lmstudio_url
+        self.local_backends = (
+            local_backends
+            if local_backends is not None
+            else _DEFAULT_LOCAL_BACKENDS
+        )
         self.cloud_url = cloud_url
         self.gateway = gateway
         self.temperature = temperature
@@ -269,6 +291,25 @@ class HanzoConfig:
         self.max_tokens = max_tokens
         self.mcp_bridge_port = mcp_bridge_port
         self.system_prompt = system_prompt
+
+
+def _parse_local_backends(raw: object) -> "tuple[str, ...]":
+    """Return the probe order for local backends from raw config.
+
+    Accepts a list of backend names (e.g. from g:hanzo_local_backends),
+    keeping only non-empty strings and preserving order. Falls back to the
+    default order when nothing usable is given.
+    """
+    if isinstance(raw, list):
+        names = tuple(
+            item for item in cast("list[object]", raw)
+            if isinstance(item, str) and item
+        )
+
+        if names:
+            return names
+
+    return _DEFAULT_LOCAL_BACKENDS
 
 
 def load_config(raw_config: dict[str, Any]) -> HanzoConfig:
@@ -337,6 +378,9 @@ def load_config(raw_config: dict[str, Any]) -> HanzoConfig:
 
     local_url = raw_config.get("local_url", "") or HANZO_LOCAL_URL
     local_model = raw_config.get("local_model", "") or HANZO_LOCAL_MODEL
+    ollama_url = raw_config.get("ollama_url", "") or HANZO_OLLAMA_URL
+    lmstudio_url = raw_config.get("lmstudio_url", "") or HANZO_LMSTUDIO_URL
+    local_backends = _parse_local_backends(raw_config.get("local_backends"))
     cloud_url = raw_config.get("cloud_url", "") or HANZO_CLOUD_URL
     gateway = (
         raw_config.get("llm_gateway", "")
@@ -372,6 +416,9 @@ def load_config(raw_config: dict[str, Any]) -> HanzoConfig:
         route=route,
         local_url=local_url,
         local_model=local_model,
+        ollama_url=ollama_url,
+        lmstudio_url=lmstudio_url,
+        local_backends=local_backends,
         cloud_url=cloud_url,
         gateway=gateway,
         temperature=temperature,
@@ -401,35 +448,222 @@ class Endpoint(NamedTuple):
     headers: dict[str, str]
 
 
-def _probe_health(url: str, timeout: float = 0.7) -> bool:
-    """Return True if ``GET {url}/health`` answers 2xx.
+def _http_probe(
+    url: str,
+    timeout: float = _PROBE_TIMEOUT,
+) -> "tuple[int, bytes]":
+    """``GET url``; return ``(status, body)``, or ``(0, b"")`` on any error.
 
-    The result is cached per URL for a few seconds so a burst of requests
-    does not re-probe the engine on every keystroke.
+    This is the single network primitive behind local-backend detection. The
+    result is cached per URL for a few seconds so a burst of requests does not
+    re-probe an engine on every keystroke. The body is read (capped) so a probe
+    that also lists models (Ollama ``/api/tags``, LM Studio ``/v1/models``)
+    does not need a second request.
     """
     now = time.monotonic()
-    cached = _health_cache.get(url)
+    cached = _probe_cache.get(url)
 
-    if cached is not None and now - cached[0] < _HEALTH_TTL_SECONDS:
+    if cached is not None and now - cached[0] < _PROBE_TTL_SECONDS:
         return cached[1]
 
-    ok = False
+    result: tuple[int, bytes] = (0, b"")
 
     try:
-        req = urllib.request.Request(f"{url}/health", method="GET")
+        req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            status = getattr(resp, "status", 0)
-            ok = isinstance(status, int) and 200 <= status < 300
+            raw_status = getattr(resp, "status", 0)
+            status = raw_status if isinstance(raw_status, int) else 0
+            result = (status, resp.read(_MAX_PROBE_BYTES))
     except (urllib.error.URLError, OSError, ValueError):
-        ok = False
+        result = (0, b"")
 
-    _health_cache[url] = (now, ok)
+    _probe_cache[url] = (now, result)
 
-    return ok
+    return result
+
+
+def _probe_ok(url: str, timeout: float = _PROBE_TIMEOUT) -> bool:
+    """Return True if ``GET url`` answers 2xx (cached, see ``_http_probe``)."""
+    status, _ = _http_probe(url, timeout)
+
+    return 200 <= status < 300
+
+
+def _first_ollama_model(body: bytes) -> str:
+    """First model name from an Ollama ``/api/tags`` body, else ``""``."""
+    parsed: object = _loads_or_none(body)
+
+    if not isinstance(parsed, dict):
+        return ""
+
+    models = cast("dict[str, object]", parsed).get("models")
+
+    if not isinstance(models, list):
+        return ""
+
+    for item in cast("list[object]", models):
+        if isinstance(item, dict):
+            entry = cast("dict[str, object]", item)
+            name = _str_field(entry, "name") or _str_field(entry, "model")
+
+            if name:
+                return name
+
+    return ""
+
+
+def _first_openai_model(body: bytes) -> str:
+    """First model id from an OpenAI-style ``/v1/models`` body, else ``""``."""
+    parsed: object = _loads_or_none(body)
+
+    if not isinstance(parsed, dict):
+        return ""
+
+    items = cast("dict[str, object]", parsed).get("data")
+
+    if not isinstance(items, list):
+        return ""
+
+    for item in cast("list[object]", items):
+        if isinstance(item, dict):
+            model_id = _str_field(cast("dict[str, object]", item), "id")
+
+            if model_id:
+                return model_id
+
+    return ""
+
+
+def _loads_or_none(body: bytes) -> object:
+    """Parse JSON from ``body``; return None on any decode error."""
+    try:
+        return json.loads(body.decode("utf-8", errors="replace"))
+    except ValueError:
+        return None
+
+
+class BackendStatus(NamedTuple):
+    """A probed local backend: where it is, what it serves, and if it's up."""
+
+    name: str       # "hanzo" | "ollama" | "lmstudio"
+    label: str      # human label, e.g. "Hanzo engine"
+    host: str       # host:port for display, e.g. "127.0.0.1:36900"
+    base_url: str   # OpenAI-compatible base URL
+    model: str      # model id to use ("" when down/unknown)
+    up: bool        # answered its probe
+
+
+def _host(url: str) -> str:
+    """Strip the scheme from ``url`` for display: ``host:port``."""
+    return url.split("://", 1)[-1].rstrip("/")
+
+
+def _detect_hanzo(config: HanzoConfig) -> BackendStatus:
+    """Probe the native Hanzo engine: ``GET {base}/health`` == 2xx."""
+    base = config.local_url
+    up = _probe_ok(f"{base}/health")
+
+    return BackendStatus(
+        name="hanzo",
+        label="Hanzo engine",
+        host=_host(base),
+        base_url=base,
+        model=config.local_model if up else "",
+        up=up,
+    )
+
+
+def _detect_ollama(config: HanzoConfig) -> BackendStatus:
+    """Probe Ollama: ``GET {base}/api/tags`` == 2xx; model = first tag.
+
+    Ollama exposes the OpenAI-compatible API at ``{base}/v1`` and serves no
+    auth. It is considered usable only when a model name resolves (from
+    ``/api/tags``, falling back to ``/v1/models``).
+    """
+    base = config.ollama_url
+    status, body = _http_probe(f"{base}/api/tags")
+    up = 200 <= status < 300
+    model = ""
+
+    if up:
+        model = _first_ollama_model(body) or _first_openai_model(
+            _http_probe(f"{base}/v1/models")[1],
+        )
+
+    return BackendStatus(
+        name="ollama",
+        label="Ollama",
+        host=_host(base),
+        base_url=base,
+        model=model,
+        up=up and bool(model),
+    )
+
+
+def _detect_lmstudio(config: HanzoConfig) -> BackendStatus:
+    """Probe LM Studio: ``GET {base}/v1/models`` == 2xx; model = first id."""
+    base = config.lmstudio_url
+    status, body = _http_probe(f"{base}/v1/models")
+    up = 200 <= status < 300
+    model = _first_openai_model(body) if up else ""
+
+    return BackendStatus(
+        name="lmstudio",
+        label="LM Studio",
+        host=_host(base),
+        base_url=base,
+        model=model,
+        up=up and bool(model),
+    )
+
+
+_LOCAL_DETECTORS: "dict[str, Callable[[HanzoConfig], BackendStatus]]" = {
+    "hanzo": _detect_hanzo,
+    "ollama": _detect_ollama,
+    "lmstudio": _detect_lmstudio,
+}
+
+
+def inspect_local_backends(config: HanzoConfig) -> "list[BackendStatus]":
+    """Probe every configured local backend (in order) and report each.
+
+    Includes backends that are down, so the UI can show their status. Use
+    ``detect_local_backends`` when only the running ones are needed.
+    """
+    report: list[BackendStatus] = []
+
+    for name in config.local_backends:
+        detector = _LOCAL_DETECTORS.get(name)
+
+        if detector is not None:
+            report.append(detector(config))
+
+    return report
+
+
+def detect_local_backends(config: HanzoConfig) -> "list[BackendStatus]":
+    """Return the running local backends, in probe order (first = preferred).
+
+    Degrades gracefully: a backend whose port is closed simply does not appear,
+    and no probe blocks longer than ``_PROBE_TIMEOUT``.
+    """
+    return [
+        backend for backend in inspect_local_backends(config) if backend.up
+    ]
+
+
+def _endpoint_for(backend: BackendStatus) -> Endpoint:
+    """Build a no-auth local Endpoint for a detected backend."""
+    return Endpoint(
+        route="local",
+        base_url=backend.base_url,
+        model=backend.model,
+        headers={"Content-Type": "application/json"},
+    )
 
 
 def _local_endpoint(config: HanzoConfig) -> Endpoint:
-    """Native local engine endpoint. It needs no auth header."""
+    """Native Hanzo engine endpoint (unconditional); needs no auth header."""
     return Endpoint(
         route="local",
         base_url=config.local_url,
@@ -461,19 +695,24 @@ def _cloud_endpoint(config: HanzoConfig) -> Endpoint:
 
 
 def resolve_endpoint(config: HanzoConfig) -> Endpoint:
-    """Pick the local engine or the cloud account for this request.
+    """Pick a local backend or the cloud account for this request.
 
-    - ``local``: always the native engine (no auth).
+    - ``local``: the first detected local backend (no auth); falls back to the
+      configured Hanzo engine when none answer, so the route stays local.
     - ``cloud``: always the cloud account (resolved account creds).
     - ``auto`` (default): an explicitly chosen cloud vendor with a resolved
-      credential wins; else the local engine when its /health is up; else
-      the cloud account.
+      credential wins; else the first detected local backend (Hanzo engine,
+      Ollama, LM Studio, in order); else the cloud account.
     """
-    if config.route == "local":
-        return _local_endpoint(config)
-
     if config.route == "cloud":
         return _cloud_endpoint(config)
+
+    if config.route == "local":
+        detected = detect_local_backends(config)
+
+        return _endpoint_for(detected[0]) if detected else _local_endpoint(
+            config,
+        )
 
     explicit_cloud = (
         config.provider_explicit
@@ -484,8 +723,10 @@ def resolve_endpoint(config: HanzoConfig) -> Endpoint:
     if explicit_cloud:
         return _cloud_endpoint(config)
 
-    if _probe_health(config.local_url):
-        return _local_endpoint(config)
+    detected = detect_local_backends(config)
+
+    if detected:
+        return _endpoint_for(detected[0])
 
     return _cloud_endpoint(config)
 
@@ -691,15 +932,24 @@ def _print_resolution() -> None:
     """Print the resolved route as JSON for :AIStatus. Reads config on stdin.
 
     Input:  {"config": {...}} on a single line.
-    Output: {"route", "base_url", "model", "provider", "authenticated"}.
+    Output: {"route", "base_url", "model", "provider", "authenticated",
+             "active_backend", "backends": [{name,label,host,model,up}, ...]}.
     """
     payload = json.loads(sys.stdin.readline() or "{}")
     config = load_config(payload.get("config", {}))
+    backends = inspect_local_backends(config)
     target = resolve_endpoint(config)
     authenticated = bool(
         target.headers.get("Authorization")
         or target.headers.get("x-api-key"),
     )
+
+    active = ""
+    if target.route == "local":
+        for backend in backends:
+            if backend.up and backend.base_url == target.base_url:
+                active = backend.name
+                break
 
     print(json.dumps({
         "route": target.route,
@@ -707,6 +957,17 @@ def _print_resolution() -> None:
         "model": target.model,
         "provider": config.provider,
         "authenticated": authenticated,
+        "active_backend": active,
+        "backends": [
+            {
+                "name": backend.name,
+                "label": backend.label,
+                "host": backend.host,
+                "model": backend.model,
+                "up": backend.up,
+            }
+            for backend in backends
+        ],
     }))
 
 

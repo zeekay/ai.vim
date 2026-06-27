@@ -27,6 +27,9 @@ function! hanzo#GetConfig() abort
     \   'route': get(g:, 'hanzo_route', 'auto'),
     \   'local_url': get(g:, 'hanzo_local_url', 'http://127.0.0.1:36900'),
     \   'local_model': get(g:, 'hanzo_local_model', 'default'),
+    \   'ollama_url': get(g:, 'hanzo_ollama_url', 'http://127.0.0.1:11434'),
+    \   'lmstudio_url': get(g:, 'hanzo_lmstudio_url', 'http://127.0.0.1:1234'),
+    \   'local_backends': get(g:, 'hanzo_local_backends', ['hanzo', 'ollama', 'lmstudio']),
     \   'cloud_url': get(g:, 'hanzo_cloud_url', 'https://api.hanzo.ai'),
     \   'llm_gateway': get(g:, 'hanzo_llm_gateway', ''),
     \}
@@ -47,6 +50,9 @@ function! hanzo#NeuralProvider() abort
     \   'route': l:config.route,
     \   'local_url': l:config.local_url,
     \   'local_model': l:config.local_model,
+    \   'ollama_url': l:config.ollama_url,
+    \   'lmstudio_url': l:config.lmstudio_url,
+    \   'local_backends': l:config.local_backends,
     \   'cloud_url': l:config.cloud_url,
     \   'llm_gateway': l:config.llm_gateway,
     \}
@@ -607,7 +613,26 @@ function! hanzo#LoginArgv(vendor) abort
     return []
 endfunction
 
+" One clean line when a cloud (OAuth/device-code) login fails -- e.g. hanzo.id
+" returning a Cloudflare 525. We never dump the raw multi-line error/stack;
+" local AI keeps working regardless.
+function! s:CloudLoginFailed() abort
+    echohl WarningMsg
+    echomsg 'Cloud login failed (Hanzo ID/IAM unreachable). '
+    \   . 'Local AI still works if a local engine is running.'
+    echohl None
+endfunction
+
+" Terminal/job exit callback for a cloud login. Vim's exit_cb(job, status) and
+" Neovim's on_exit(job, status, event) both put the exit status at arg 1.
 function! s:OnLoginExit(...) abort
+    let l:status = a:0 >= 2 ? a:000[1] : 0
+
+    if type(l:status) == v:t_number && l:status != 0
+        call s:CloudLoginFailed()
+        return
+    endif
+
     call hanzo#Status()
 endfunction
 
@@ -626,7 +651,11 @@ function! s:RunTerminal(argv) abort
     else
         " No +terminal: run synchronously as a last resort.
         call system(join(map(copy(a:argv), 'shellescape(v:val)'), ' '))
-        call hanzo#Status()
+        if v:shell_error != 0
+            call s:CloudLoginFailed()
+        else
+            call hanzo#Status()
+        endif
     endif
 endfunction
 
@@ -721,49 +750,134 @@ function! s:LoginOAuth(vendor) abort
     call s:RunTerminal(hanzo#LoginArgv(a:vendor))
 endfunction
 
-" :AILogin [vendor] -- interactive menu when no vendor is given.
-function! hanzo#Login(...) abort
-    let l:vendor = a:0 > 0 ? s:NormalizeVendor(a:1) : ''
+" The detected (running) local backends, in probe order. [] when none are up
+" or the route could not be resolved.
+function! hanzo#DetectedLocal() abort
+    let l:route = hanzo#ResolveRoute()
 
-    if empty(l:vendor)
-        let l:choice = inputlist([
-        \   'Select AI login (Enter = Hanzo ID):',
-        \   '1) Hanzo ID (hanzo.id OAuth, device-code) [default]',
-        \   '2) ChatGPT (OpenAI OAuth, device-code)',
-        \   '3) Claude (Anthropic API key)',
-        \   '4) API key (active provider)',
-        \   '5) Cancel',
-        \])
-        echo "\n"
+    return filter(copy(get(l:route, 'backends', [])),
+    \   'get(v:val, "up", v:false)')
+endfunction
 
-        if l:choice == 0 || l:choice == 1
-            " Enter / no selection defaults to Hanzo ID.
-            let l:vendor = 'hanzo'
-        elseif l:choice == 2
-            let l:vendor = 'chatgpt'
-        elseif l:choice == 3
-            let l:vendor = 'claude'
-        elseif l:choice == 4
-            let l:vendor = 'apikey'
-        else
-            echo 'AILogin cancelled.'
+" Confirm a local backend is active. No login runs -- a local engine needs
+" none. Clearing the explicit-provider flag lets auto-routing prefer it.
+function! s:LocalActiveMsg(backend) abort
+    let l:label = type(a:backend) == v:t_dict
+    \   ? get(a:backend, 'label', 'local engine') : 'local engine'
+    let l:host = type(a:backend) == v:t_dict ? get(a:backend, 'host', '') : ''
+    let l:where = empty(l:host) ? l:label : printf('%s (%s)', l:label, l:host)
 
-            return
-        endif
+    echo printf('Local AI active via %s - no login needed.', l:where)
+endfunction
+
+" Menu choice of a detected local backend: confirm, no login. Local-first auto
+" routing already prefers it, so just drop any explicit cloud choice.
+function! s:UseLocal(backend) abort
+    let g:hanzo_route = 'auto'
+    let g:hanzo_provider_explicit = 0
+    call s:LocalActiveMsg(a:backend)
+endfunction
+
+" :AILogin local -- force the local route regardless of probe latency.
+function! s:ForceLocal() abort
+    let g:hanzo_route = 'local'
+    let g:hanzo_provider_explicit = 0
+    let l:detected = hanzo#DetectedLocal()
+
+    if empty(l:detected)
+        echo 'Local route forced. No local engine detected yet - start the '
+        \   . 'Hanzo engine, Ollama, or LM Studio.'
+    else
+        call s:LocalActiveMsg(l:detected[0])
     endif
+endfunction
 
-    if l:vendor ==# 'hanzo' || l:vendor ==# 'chatgpt'
-        call s:LoginOAuth(l:vendor)
-    elseif l:vendor ==# 'claude'
+" Run a cloud login for a vendor. A device-code/OAuth failure surfaces via
+" s:OnLoginExit as one clean line, never a raw stack.
+function! s:LoginCloud(vendor) abort
+    if a:vendor ==# 'hanzo' || a:vendor ==# 'chatgpt'
+        call s:LoginOAuth(a:vendor)
+    elseif a:vendor ==# 'claude'
         call s:LoginApiKey('anthropic')
-    elseif l:vendor ==# 'apikey'
+    elseif a:vendor ==# 'apikey'
         call s:LoginApiKey(get(g:, 'hanzo_provider', 'anthropic'))
     else
         echohl ErrorMsg
-        echomsg 'Unknown AILogin vendor: ' . l:vendor
-        \   . ' (use claude|chatgpt|hanzo|apikey)'
+        echomsg 'Unknown AILogin vendor: ' . a:vendor
+        \   . ' (use local|hanzo|chatgpt|claude|apikey)'
         echohl None
     endif
+endfunction
+
+" :AILogin [target] -- local-aware. With no argument it shows a menu that lists
+" any detected local backends first (Enter uses the first one, no login) and
+" the cloud options after. With an argument it acts directly:
+"   local|hanzo|chatgpt|claude|apikey
+function! hanzo#Login(...) abort
+    let l:vendor = a:0 > 0 ? s:NormalizeVendor(a:1) : ''
+
+    if !empty(l:vendor)
+        return l:vendor ==# 'local'
+        \   ? s:ForceLocal()
+        \   : s:LoginCloud(l:vendor)
+    endif
+
+    " Interactive menu: probe local backends once, list them first.
+    let l:route = hanzo#ResolveRoute()
+    let l:detected = filter(copy(get(l:route, 'backends', [])),
+    \   'get(v:val, "up", v:false)')
+
+    let l:default = empty(l:detected)
+    \   ? 'Hanzo ID'
+    \   : 'Local ' . get(l:detected[0], 'label', 'engine')
+    let l:display = ['Select AI login (Enter = ' . l:default . '):']
+    let l:actions = []
+
+    for l:backend in l:detected
+        call add(l:display, printf('%d) Local: %s (%s) [running, no login]',
+        \   len(l:actions) + 1, get(l:backend, 'label', ''),
+        \   get(l:backend, 'host', '')))
+        call add(l:actions, {'kind': 'local', 'backend': l:backend})
+    endfor
+
+    for [l:label, l:vend] in [
+    \   ['Hanzo ID (hanzo.id)', 'hanzo'],
+    \   ['ChatGPT', 'chatgpt'],
+    \   ['Claude', 'claude'],
+    \   ['API key', 'apikey'],
+    \   ['Cancel', 'cancel'],
+    \]
+        call add(l:display, printf('%d) %s', len(l:actions) + 1, l:label))
+        call add(l:actions, {'kind': 'cloud', 'vendor': l:vend})
+    endfor
+
+    let l:choice = inputlist(l:display)
+    echo "\n"
+
+    " Enter / Esc (0): first detected local backend if any, else Hanzo ID.
+    if l:choice <= 0
+        return empty(l:detected)
+        \   ? s:LoginCloud('hanzo')
+        \   : s:UseLocal(l:detected[0])
+    endif
+
+    if l:choice > len(l:actions)
+        echo 'AILogin cancelled.'
+        return
+    endif
+
+    let l:action = l:actions[l:choice - 1]
+
+    if l:action.kind ==# 'local'
+        return s:UseLocal(l:action.backend)
+    endif
+
+    if l:action.vendor ==# 'cancel'
+        echo 'AILogin cancelled.'
+        return
+    endif
+
+    return s:LoginCloud(l:action.vendor)
 endfunction
 
 " :AILogout -- clear the shared credential stores via `dev`.
@@ -800,20 +914,41 @@ function! hanzo#ResolveRoute() abort
     return type(l:parsed) == v:t_dict ? l:parsed : {}
 endfunction
 
-" :AIStatus / :AIWhoami -- show the active route, login state, and provider.
+" :AIStatus / :AIWhoami -- list every detected local backend (model + up/down),
+" the active route, and the login state.
 function! hanzo#Status() abort
     let l:route = hanzo#ResolveRoute()
 
     if empty(l:route)
-        echo 'route: unknown (could not probe local engine)'
-    elseif get(l:route, 'route', '') ==# 'local'
-        echo printf('route=local engine %s (%s) [UP]',
-        \   get(l:route, 'base_url', ''), get(l:route, 'model', ''))
+        echo 'route: unknown (could not probe local engines)'
     else
-        let l:note = get(l:route, 'authenticated', v:false)
-        \   ? '' : ' [no credential]'
-        echo printf('route=cloud provider=%s (cloud %s)%s',
-        \   get(l:route, 'provider', ''), get(l:route, 'base_url', ''), l:note)
+        let l:backends = get(l:route, 'backends', [])
+
+        if !empty(l:backends)
+            let l:parts = []
+            for l:b in l:backends
+                if get(l:b, 'up', v:false)
+                    call add(l:parts, printf('%s %s (%s) [UP]',
+                    \   get(l:b, 'label', ''), get(l:b, 'host', ''),
+                    \   get(l:b, 'model', '')))
+                else
+                    call add(l:parts,
+                    \   printf('%s [down]', get(l:b, 'label', '')))
+                endif
+            endfor
+            echo 'Local backends: ' . join(l:parts, ' ; ')
+        endif
+
+        if get(l:route, 'route', '') ==# 'local'
+            echo printf('Active route: local -> %s (%s)',
+            \   get(l:route, 'base_url', ''), get(l:route, 'model', ''))
+        else
+            let l:note = get(l:route, 'authenticated', v:false)
+            \   ? '' : ' [no credential]'
+            echo printf('Active route: cloud -> provider=%s %s%s',
+            \   get(l:route, 'provider', ''),
+            \   get(l:route, 'base_url', ''), l:note)
+        endif
     endif
 
     if s:HasDev()
@@ -830,7 +965,7 @@ endfunction
 function! hanzo#LoginComplete(arglead, cmdline, cursorpos) abort
     let l:matches = []
 
-    for l:vendor in ['claude', 'chatgpt', 'hanzo', 'apikey']
+    for l:vendor in ['local', 'hanzo', 'chatgpt', 'claude', 'apikey']
         if stridx(l:vendor, a:arglead) == 0
             call add(l:matches, l:vendor)
         endif

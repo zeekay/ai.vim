@@ -51,6 +51,12 @@ let g:hanzo_mode = get(g:, 'hanzo_mode', 'api')
 let g:hanzo_route = get(g:, 'hanzo_route', 'auto')
 let g:hanzo_local_url = get(g:, 'hanzo_local_url', 'http://127.0.0.1:36900')
 let g:hanzo_local_model = get(g:, 'hanzo_local_model', 'default')
+" Additional local backends probed (in order) for the local/auto routes.
+" The first one that is up wins; all speak the OpenAI-compatible API and need
+" no auth. Set g:hanzo_local_backends to reorder or disable detection.
+let g:hanzo_ollama_url = get(g:, 'hanzo_ollama_url', 'http://127.0.0.1:11434')
+let g:hanzo_lmstudio_url = get(g:, 'hanzo_lmstudio_url', 'http://127.0.0.1:1234')
+let g:hanzo_local_backends = get(g:, 'hanzo_local_backends', ['hanzo', 'ollama', 'lmstudio'])
 let g:hanzo_cloud_url = get(g:, 'hanzo_cloud_url', 'https://api.hanzo.ai')
 " Optional override of the cloud base (e.g. a local gateway on :4000). Empty
 " means use g:hanzo_cloud_url.
