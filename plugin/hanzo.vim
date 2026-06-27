@@ -38,15 +38,38 @@ let g:hanzo_debug = get(g:, 'hanzo_debug', 0)
 
 " Model settings
 let g:hanzo_model = get(g:, 'hanzo_model', 'claude-sonnet-4-20250514')
+" Capture whether the user chose a provider before we apply the default, so
+" auto-routing can tell a deliberate cloud choice from the anthropic default.
+let g:hanzo_provider_explicit = get(g:, 'hanzo_provider_explicit', exists('g:hanzo_provider'))
 let g:hanzo_provider = get(g:, 'hanzo_provider', 'anthropic')
 let g:hanzo_mode = get(g:, 'hanzo_mode', 'api')
-let g:hanzo_llm_gateway = get(g:, 'hanzo_llm_gateway', 'http://localhost:4000')
+
+" Local-first routing: native engine when up, else cloud account.
+"   auto  -> probe the local engine /health; local if up, else cloud
+"   local -> always the native local engine (no auth)
+"   cloud -> always the cloud account (resolved creds)
+let g:hanzo_route = get(g:, 'hanzo_route', 'auto')
+let g:hanzo_local_url = get(g:, 'hanzo_local_url', 'http://127.0.0.1:36900')
+let g:hanzo_local_model = get(g:, 'hanzo_local_model', 'default')
+let g:hanzo_cloud_url = get(g:, 'hanzo_cloud_url', 'https://api.hanzo.ai')
+" Optional override of the cloud base (e.g. a local gateway on :4000). Empty
+" means use g:hanzo_cloud_url.
+let g:hanzo_llm_gateway = get(g:, 'hanzo_llm_gateway', '')
 
 " AI login / CLI delegation (the binary :AILogin reuses for OAuth flows)
 let g:ai_cli = get(g:, 'ai_cli', 'dev')
 
 " Keybind settings
 let g:hanzo_set_default_keybinds = get(g:, 'hanzo_set_default_keybinds', 0)
+
+" Local-first by default: route :AI (Neural) through the Hanzo provider unless
+" the user configured their own providers. An existing g:neural is untouched.
+if !exists('g:neural')
+    let g:neural = {}
+endif
+if type(g:neural) == v:t_dict && !has_key(g:neural, 'providers')
+    let g:neural.providers = [hanzo#NeuralProvider()]
+endif
 
 " ============================================================================
 " Bridge Commands

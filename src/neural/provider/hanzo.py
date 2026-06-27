@@ -15,7 +15,10 @@ import platform
 import ssl
 import subprocess
 import sys
-from typing import Any, cast
+import time
+import urllib.error
+import urllib.request
+from typing import Any, NamedTuple, cast
 
 # Try to import websockets for MCP/ZAP bridge
 try:
@@ -25,11 +28,27 @@ except ImportError:
     HAS_WEBSOCKETS = False
 
 # Constants
-HANZO_LLM_GATEWAY = "http://localhost:4000"  # Default LLM Gateway
+#
+# Local-first routing endpoints. The native Hanzo engine (kept alive by the
+# Hanzo desktop app's node manager) speaks the OpenAI-compatible API on :36900
+# and needs no auth. The cloud account is the Hanzo gateway, reached with the
+# resolved account credentials.
+HANZO_LOCAL_URL = "http://127.0.0.1:36900"   # native local engine
+HANZO_LOCAL_MODEL = "default"                # model id the local engine serves
+HANZO_CLOUD_URL = "https://api.hanzo.ai"     # cloud account gateway
 HANZO_MCP_BRIDGE = "ws://localhost:9228"     # Vim bridge port
 DATA_HEADER = "data: "
 DONE_MARKER = "[DONE]"
 ANTHROPIC_VERSION = "2023-06-01"
+
+# A /health probe result is trusted for this long (per URL), so a burst of
+# requests/keystrokes does not re-probe the local engine each time.
+_HEALTH_TTL_SECONDS = 5.0
+_health_cache: "dict[str, tuple[float, bool]]" = {}
+
+# Cloud vendors whose explicit selection (with a resolved credential) wins
+# over the local engine even in auto mode.
+_CLOUD_VENDORS = ("anthropic", "openai")
 
 # Keys a `dev`-written auth.json may carry, in the order each store prefers.
 _CODEX_KEYS = ("OPENAI_API_KEY", "openai_api_key")
@@ -214,6 +233,14 @@ class HanzoConfig:
         # Model settings
         model: str = "claude-sonnet-4-20250514",
         provider: str = "anthropic",  # anthropic, openai, google, ollama
+        provider_explicit: bool = False,
+
+        # Local-first routing
+        route: str = "auto",  # auto | local | cloud
+        local_url: str = HANZO_LOCAL_URL,
+        local_model: str = HANZO_LOCAL_MODEL,
+        cloud_url: str = HANZO_CLOUD_URL,
+        gateway: str = "",  # optional cloud-base override (e.g. :4000)
 
         # Generation settings
         temperature: float = 0.2,
@@ -231,6 +258,12 @@ class HanzoConfig:
         self.api_key = api_key
         self.model = model
         self.provider = provider
+        self.provider_explicit = provider_explicit
+        self.route = route
+        self.local_url = local_url
+        self.local_model = local_model
+        self.cloud_url = cloud_url
+        self.gateway = gateway
         self.temperature = temperature
         self.top_p = top_p
         self.max_tokens = max_tokens
@@ -248,16 +281,12 @@ def load_config(raw_config: dict[str, Any]) -> HanzoConfig:
     if mode not in ("api", "mcp", "ollama"):
         mode = "api"
 
-    # URL defaults
+    # URL defaults. In api mode the request target (local engine vs cloud
+    # account) is chosen by resolve_endpoint(), so url stays empty here; only
+    # ollama uses this field directly.
     url = raw_config.get("url", "")
-    if not url:
-        if mode == "ollama":
-            url = "http://localhost:11434"
-        elif mode == "mcp":
-            url = ""  # Uses WebSocket
-        else:
-            # Check for LLM Gateway first, then direct API
-            url = os.environ.get("HANZO_LLM_GATEWAY", HANZO_LLM_GATEWAY)
+    if not url and mode == "ollama":
+        url = "http://localhost:11434"
 
     # Model selection
     model = raw_config.get("model", "claude-sonnet-4-20250514")
@@ -295,6 +324,25 @@ def load_config(raw_config: dict[str, Any]) -> HanzoConfig:
             if api_key:
                 break
 
+    # Explicit provider intent: set by the user via g:hanzo_provider /
+    # :AILogin. Distinguishes a deliberate cloud choice from the default,
+    # so auto-routing does not silently favour cloud just because a key
+    # happens to be in the environment.
+    provider_explicit = bool(raw_config.get("provider_explicit", False))
+
+    # Local-first routing config (mirrors the g:hanzo_* vim defaults).
+    route = raw_config.get("route", "auto")
+    if route not in ("auto", "local", "cloud"):
+        route = "auto"
+
+    local_url = raw_config.get("local_url", "") or HANZO_LOCAL_URL
+    local_model = raw_config.get("local_model", "") or HANZO_LOCAL_MODEL
+    cloud_url = raw_config.get("cloud_url", "") or HANZO_CLOUD_URL
+    gateway = (
+        raw_config.get("llm_gateway", "")
+        or os.environ.get("HANZO_LLM_GATEWAY", "")
+    )
+
     # Generation settings
     temperature = float(raw_config.get("temperature", 0.2))
     top_p = float(raw_config.get("top_p", 1.0))
@@ -306,10 +354,13 @@ def load_config(raw_config: dict[str, Any]) -> HanzoConfig:
     # System prompt
     system_prompt = raw_config.get("system_prompt", "")
     if not system_prompt:
-        system_prompt = """You are an expert programmer assistant integrated into Vim/Neovim.
-Provide concise, accurate code and explanations.
-When writing code, match the existing style in the file.
-Focus on the specific task requested."""
+        system_prompt = (
+            "You are an expert programmer assistant integrated into "
+            "Vim/Neovim.\n"
+            "Provide concise, accurate code and explanations.\n"
+            "When writing code, match the existing style in the file.\n"
+            "Focus on the specific task requested."
+        )
 
     return HanzoConfig(
         mode=mode,
@@ -317,6 +368,12 @@ Focus on the specific task requested."""
         api_key=api_key,
         model=model,
         provider=provider,
+        provider_explicit=provider_explicit,
+        route=route,
+        local_url=local_url,
+        local_model=local_model,
+        cloud_url=cloud_url,
+        gateway=gateway,
         temperature=temperature,
         top_p=top_p,
         max_tokens=max_tokens,
@@ -325,10 +382,120 @@ Focus on the specific task requested."""
     )
 
 
+# ---------------------------------------------------------------------------
+# Local-first routing
+#
+# resolve_endpoint() is the single place that decides where a request goes:
+# the native local engine (no auth) when it is up, else the cloud account.
+# Both speak the OpenAI-compatible POST {base}/v1/chat/completions, so the
+# request/stream code below is shared.
+# ---------------------------------------------------------------------------
+
+
+class Endpoint(NamedTuple):
+    """A resolved request target: where to send and how to authenticate."""
+
+    route: str  # "local" or "cloud"
+    base_url: str
+    model: str
+    headers: dict[str, str]
+
+
+def _probe_health(url: str, timeout: float = 0.7) -> bool:
+    """Return True if ``GET {url}/health`` answers 2xx.
+
+    The result is cached per URL for a few seconds so a burst of requests
+    does not re-probe the engine on every keystroke.
+    """
+    now = time.monotonic()
+    cached = _health_cache.get(url)
+
+    if cached is not None and now - cached[0] < _HEALTH_TTL_SECONDS:
+        return cached[1]
+
+    ok = False
+
+    try:
+        req = urllib.request.Request(f"{url}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 0)
+            ok = isinstance(status, int) and 200 <= status < 300
+    except (urllib.error.URLError, OSError, ValueError):
+        ok = False
+
+    _health_cache[url] = (now, ok)
+
+    return ok
+
+
+def _local_endpoint(config: HanzoConfig) -> Endpoint:
+    """Native local engine endpoint. It needs no auth header."""
+    return Endpoint(
+        route="local",
+        base_url=config.local_url,
+        model=config.local_model,
+        headers={"Content-Type": "application/json"},
+    )
+
+
+def _cloud_endpoint(config: HanzoConfig) -> Endpoint:
+    """Cloud account endpoint: the Hanzo gateway (or a gateway override).
+
+    An explicitly chosen cloud vendor uses its own credential; otherwise the
+    Hanzo account token (Bearer) authenticates against the gateway.
+    """
+    base = config.gateway or config.cloud_url
+
+    if config.provider_explicit and config.provider in _CLOUD_VENDORS:
+        provider, api_key = config.provider, config.api_key
+    else:
+        provider = "hanzo"
+        api_key = resolve_shared_credential("hanzo") or config.api_key
+
+    return Endpoint(
+        route="cloud",
+        base_url=base,
+        model=config.model,
+        headers=build_auth_headers(provider, api_key),
+    )
+
+
+def resolve_endpoint(config: HanzoConfig) -> Endpoint:
+    """Pick the local engine or the cloud account for this request.
+
+    - ``local``: always the native engine (no auth).
+    - ``cloud``: always the cloud account (resolved account creds).
+    - ``auto`` (default): an explicitly chosen cloud vendor with a resolved
+      credential wins; else the local engine when its /health is up; else
+      the cloud account.
+    """
+    if config.route == "local":
+        return _local_endpoint(config)
+
+    if config.route == "cloud":
+        return _cloud_endpoint(config)
+
+    explicit_cloud = (
+        config.provider_explicit
+        and config.provider in _CLOUD_VENDORS
+        and bool(config.api_key)
+    )
+
+    if explicit_cloud:
+        return _cloud_endpoint(config)
+
+    if _probe_health(config.local_url):
+        return _local_endpoint(config)
+
+    return _cloud_endpoint(config)
+
+
 async def call_via_mcp(config: HanzoConfig, prompt: str) -> None:
     """Call LLM via MCP/ZAP WebSocket bridge."""
     if not HAS_WEBSOCKETS:
-        raise RuntimeError("websockets not installed. Run: pip install websockets")
+        raise RuntimeError(
+            "websockets not installed. Run: pip install websockets",
+        )
 
     uri = f"ws://localhost:{config.mcp_bridge_port + 1}"
 
@@ -345,7 +512,7 @@ async def call_via_mcp(config: HanzoConfig, prompt: str) -> None:
                     "max_tokens": config.max_tokens,
                     "stream": True,
                     "system_prompt": config.system_prompt,
-                }
+                },
             }
             await ws.send(json.dumps(request))
 
@@ -360,25 +527,31 @@ async def call_via_mcp(config: HanzoConfig, prompt: str) -> None:
                     break
 
             print()
-    except ConnectionRefusedError:
-        raise RuntimeError(f"Cannot connect to MCP bridge on port {config.mcp_bridge_port + 1}. Start Vim with :HanzoStart")
+    except ConnectionRefusedError as error:
+        port = config.mcp_bridge_port + 1
+        raise RuntimeError(
+            f"Cannot connect to MCP bridge on port {port}. "
+            "Start Vim with :HanzoStart",
+        ) from error
 
 
 def call_openai_compatible(config: HanzoConfig, prompt: str) -> None:
-    """Call OpenAI-compatible API (works with LLM Gateway, OpenAI, Anthropic via proxy)."""
-    import urllib.request
-    import urllib.error
+    """Stream a completion from the resolved OpenAI-compatible endpoint.
 
-    headers = build_auth_headers(config.provider, config.api_key)
+    The target (local engine vs cloud account) is chosen by
+    ``resolve_endpoint``; both speak ``POST {base}/v1/chat/completions``.
+    """
+    target = resolve_endpoint(config)
+    headers = dict(target.headers)
 
     # Build messages
-    messages = []
+    messages: list[dict[str, str]] = []
     if config.system_prompt:
         messages.append({"role": "system", "content": config.system_prompt})
     messages.append({"role": "user", "content": prompt})
 
     data: dict[str, Any] = {
-        "model": config.model,
+        "model": target.model,
         "messages": messages,
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
@@ -386,14 +559,20 @@ def call_openai_compatible(config: HanzoConfig, prompt: str) -> None:
         "stream": True,
     }
 
-    # Determine endpoint
-    if config.provider == "anthropic" and "api.anthropic.com" in config.url:
-        endpoint = f"{config.url}/v1/messages"
-    else:
-        endpoint = f"{config.url}/v1/chat/completions"
+    # Anthropic's native API uses /v1/messages; the local engine and the
+    # Hanzo gateway are OpenAI-compatible.
+    is_anthropic_native = (
+        config.provider == "anthropic"
+        and "api.anthropic.com" in target.base_url
+    )
+    request_url = (
+        f"{target.base_url}/v1/messages"
+        if is_anthropic_native
+        else f"{target.base_url}/v1/chat/completions"
+    )
 
     req = urllib.request.Request(
-        endpoint,
+        request_url,
         data=json.dumps(data).encode("utf-8"),
         headers=headers,
         method="POST",
@@ -452,29 +631,28 @@ def call_openai_compatible(config: HanzoConfig, prompt: str) -> None:
             err_data = json.loads(message)
             if "error" in err_data:
                 message = err_data["error"].get("message", message)
-        except:
+        except ValueError:
             pass
-        raise RuntimeError(f"API error ({error.code}): {message}")
+        raise RuntimeError(
+            f"API error ({error.code}): {message}",
+        ) from error
 
 
 def call_ollama(config: HanzoConfig, prompt: str) -> None:
     """Call local Ollama instance."""
-    import urllib.request
-    import urllib.error
-
-    messages = []
+    messages: list[dict[str, str]] = []
     if config.system_prompt:
         messages.append({"role": "system", "content": config.system_prompt})
     messages.append({"role": "user", "content": prompt})
 
-    data = {
+    data: dict[str, Any] = {
         "model": config.model,
         "messages": messages,
         "stream": True,
         "options": {
             "temperature": config.temperature,
             "num_predict": config.max_tokens,
-        }
+        },
     }
 
     req = urllib.request.Request(
@@ -505,11 +683,39 @@ def call_ollama(config: HanzoConfig, prompt: str) -> None:
         print()
 
     except urllib.error.HTTPError as error:
-        raise RuntimeError(f"Ollama error ({error.code}): {error.read().decode()}")
+        body = error.read().decode()
+        raise RuntimeError(f"Ollama error ({error.code}): {body}") from error
+
+
+def _print_resolution() -> None:
+    """Print the resolved route as JSON for :AIStatus. Reads config on stdin.
+
+    Input:  {"config": {...}} on a single line.
+    Output: {"route", "base_url", "model", "provider", "authenticated"}.
+    """
+    payload = json.loads(sys.stdin.readline() or "{}")
+    config = load_config(payload.get("config", {}))
+    target = resolve_endpoint(config)
+    authenticated = bool(
+        target.headers.get("Authorization")
+        or target.headers.get("x-api-key"),
+    )
+
+    print(json.dumps({
+        "route": target.route,
+        "base_url": target.base_url,
+        "model": target.model,
+        "provider": config.provider,
+        "authenticated": authenticated,
+    }))
 
 
 def main() -> None:
     """Main entry point."""
+    if len(sys.argv) > 1 and sys.argv[1] == "--resolve":
+        _print_resolution()
+        return
+
     input_data = json.loads(sys.stdin.readline())
 
     try:
