@@ -17,7 +17,7 @@ CONTENTS                                                       *hanzo-contents*
 1. AI Login                                                     *hanzo-ailogin*
 
 `:AILogin` is a unified, multi-vendor login. It is NOT vendor-locked: you can
-log in with Claude, ChatGPT, or Hanzo, or just paste an API key.
+log in with Hanzo ID, ChatGPT, or Claude, or just paste an API key.
 
 It does NOT reimplement OAuth. The OAuth/device-code flows are delegated to the
 already-installed `dev` CLI (Hanzo Dev), and the AI provider reads the SAME
@@ -29,8 +29,8 @@ authenticated.
 
 `:AILogin` [{vendor}]                                                *:AILogin*
 
-  With no argument, shows a menu:
-    1) Claude    2) ChatGPT    3) Hanzo    4) API key
+  With no argument, shows a menu (Enter defaults to Hanzo ID):
+    1) Hanzo ID    2) ChatGPT    3) Claude    4) API key    5) Cancel
 
   With an argument, logs in directly. {vendor} is one of:
     claude | chatgpt | hanzo | apikey

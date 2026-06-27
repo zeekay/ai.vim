@@ -727,20 +727,22 @@ function! hanzo#Login(...) abort
 
     if empty(l:vendor)
         let l:choice = inputlist([
-        \   'Select AI login:',
-        \   '1) Claude (Anthropic API key)',
+        \   'Select AI login (Enter = Hanzo ID):',
+        \   '1) Hanzo ID (hanzo.id OAuth, device-code) [default]',
         \   '2) ChatGPT (OpenAI OAuth, device-code)',
-        \   '3) Hanzo (hanzo.id OAuth, device-code)',
+        \   '3) Claude (Anthropic API key)',
         \   '4) API key (active provider)',
+        \   '5) Cancel',
         \])
         echo "\n"
 
-        if l:choice == 1
-            let l:vendor = 'claude'
+        if l:choice == 0 || l:choice == 1
+            " Enter / no selection defaults to Hanzo ID.
+            let l:vendor = 'hanzo'
         elseif l:choice == 2
             let l:vendor = 'chatgpt'
         elseif l:choice == 3
-            let l:vendor = 'hanzo'
+            let l:vendor = 'claude'
         elseif l:choice == 4
             let l:vendor = 'apikey'
         else
