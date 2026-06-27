@@ -528,3 +528,251 @@ function! hanzo#Version() abort
     echo "  Model: " . get(g:, 'hanzo_model', 'claude-sonnet-4-20250514')
     echo "  Mode: " . get(g:, 'hanzo_mode', 'api')
 endfunction
+
+" ============================================================================
+" AI Login (multi-vendor: Claude / ChatGPT / Hanzo / API key)
+" ============================================================================
+"
+" Not vendor-locked. OAuth/device-code flows are delegated to the installed
+" `dev` CLI (Hanzo Dev), and the provider shares its credential stores
+" (~/.codex/auth.json, ~/.hanzo/auth.json) and the
+" ANTHROPIC_API_KEY/OPENAI_API_KEY/HANZO_API_KEY env vars. We never echo,
+" log, or place a key on a command line: keys are read via inputsecret() and
+" piped to `dev` over stdin; `dev` owns the on-disk secure store (0600).
+
+function! s:DevCli() abort
+    return get(g:, 'ai_cli', 'dev')
+endfunction
+
+function! s:HasDev() abort
+    return executable(s:DevCli())
+endfunction
+
+" The environment variable the provider reads back for each vendor.
+function! s:ProviderEnvVar(provider) abort
+    if a:provider ==# 'anthropic'
+        return 'ANTHROPIC_API_KEY'
+    elseif a:provider ==# 'openai'
+        return 'OPENAI_API_KEY'
+    elseif a:provider ==# 'hanzo'
+        return 'HANZO_API_KEY'
+    endif
+
+    return ''
+endfunction
+
+" Normalise a vendor name to one of: claude, chatgpt, hanzo, apikey.
+function! s:NormalizeVendor(vendor) abort
+    let l:v = tolower(trim(a:vendor))
+
+    if l:v ==# 'anthropic'
+        return 'claude'
+    elseif l:v ==# 'openai' || l:v ==# 'gpt'
+        return 'chatgpt'
+    elseif l:v ==# 'key' || l:v ==# 'api-key' || l:v ==# 'api_key'
+        return 'apikey'
+    endif
+
+    return l:v
+endfunction
+
+" Build the `dev login ...` argv for OAuth/device-code vendors.
+" Returns [] for the key-based vendors (claude/apikey).
+function! hanzo#LoginArgv(vendor) abort
+    let l:v = s:NormalizeVendor(a:vendor)
+
+    if l:v ==# 'hanzo'
+        return [s:DevCli(), 'login', '--device-code']
+    elseif l:v ==# 'chatgpt'
+        return [s:DevCli(), 'login', '--chatgpt', '--device-code']
+    endif
+
+    return []
+endfunction
+
+function! s:OnLoginExit(...) abort
+    call hanzo#Status()
+endfunction
+
+" Run an interactive command in a terminal so the device code + URL render
+" and the OAuth callback can complete.
+function! s:RunTerminal(argv) abort
+    if has('nvim')
+        new
+        call termopen(a:argv, {'on_exit': function('s:OnLoginExit')})
+        startinsert
+    elseif exists('*term_start')
+        call term_start(a:argv, {
+        \   'term_name': 'AILogin',
+        \   'exit_cb': function('s:OnLoginExit'),
+        \})
+    else
+        " No +terminal: run synchronously as a last resort.
+        call system(join(map(copy(a:argv), 'shellescape(v:val)'), ' '))
+        call hanzo#Status()
+    endif
+endfunction
+
+" Write an auth.json matching the schema `dev` writes for API-key auth.
+function! s:WriteAuthJson(path, key) abort
+    let l:dir = fnamemodify(a:path, ':h')
+
+    if !isdirectory(l:dir)
+        call mkdir(l:dir, 'p', 0700)
+    endif
+
+    call writefile([json_encode({'auth_mode': 'apikey', 'OPENAI_API_KEY': a:key})], a:path)
+    call setfperm(a:path, 'rw-------')
+endfunction
+
+" Fallback when `dev` is absent: persist the key where the provider reads it.
+function! s:PersistKeyNoDev(provider, key) abort
+    let l:env = s:ProviderEnvVar(a:provider)
+
+    if a:provider ==# 'openai'
+        call s:WriteAuthJson(expand('~/.codex/auth.json'), a:key)
+        echo 'Wrote ~/.codex/auth.json (0600).'
+    elseif a:provider ==# 'hanzo'
+        call s:WriteAuthJson(expand('~/.hanzo/auth.json'), a:key)
+        echo 'Wrote ~/.hanzo/auth.json (0600).'
+    endif
+
+    if !empty(l:env)
+        echo 'To persist across sessions, add to your shell profile:'
+        echo '  export ' . l:env . '=<your key>'
+    endif
+
+    echo 'Install the `dev` CLI for OAuth logins: https://github.com/hanzoai/dev'
+endfunction
+
+" Prompt for an API key (inputsecret) and store it for `provider`.
+function! s:LoginApiKey(provider) abort
+    let l:provider = empty(a:provider)
+    \   ? get(g:, 'hanzo_provider', 'anthropic')
+    \   : a:provider
+    let l:key = inputsecret('Enter ' . l:provider . ' API key: ')
+
+    if empty(l:key)
+        if l:provider ==# 'anthropic'
+            echo 'No key entered. Set $ANTHROPIC_API_KEY or run :AILogin claude again.'
+        else
+            echo 'No key entered.'
+        endif
+
+        return
+    endif
+
+    " Make the key available to the in-session provider immediately. The
+    " value never appears in the :execute string (only the variable name).
+    let l:env = s:ProviderEnvVar(l:provider)
+
+    if !empty(l:env)
+        execute 'let $' . l:env . ' = l:key'
+    endif
+
+    let g:hanzo_provider = l:provider
+
+    if s:HasDev()
+        " Pipe the key via stdin: never on the command line or in history.
+        call system(s:DevCli() . ' login --with-api-key', l:key)
+        echo 'Stored ' . l:provider . ' key via ' . s:DevCli() . '.'
+        call hanzo#Status()
+    else
+        call s:PersistKeyNoDev(l:provider, l:key)
+    endif
+endfunction
+
+" Start an OAuth/device-code flow via `dev`, falling back to API key.
+function! s:LoginOAuth(vendor) abort
+    if !s:HasDev()
+        echo 'The `dev` CLI is required for OAuth logins but was not found on PATH.'
+        echo 'Falling back to API-key login for the active provider.'
+        call s:LoginApiKey(get(g:, 'hanzo_provider', 'anthropic'))
+
+        return
+    endif
+
+    let g:hanzo_provider = s:NormalizeVendor(a:vendor) ==# 'hanzo'
+    \   ? 'hanzo'
+    \   : 'openai'
+    echo 'Starting ' . a:vendor . ' login via '
+    \   . s:DevCli() . ' (device-code)...'
+    call s:RunTerminal(hanzo#LoginArgv(a:vendor))
+endfunction
+
+" :AILogin [vendor] -- interactive menu when no vendor is given.
+function! hanzo#Login(...) abort
+    let l:vendor = a:0 > 0 ? s:NormalizeVendor(a:1) : ''
+
+    if empty(l:vendor)
+        let l:choice = inputlist([
+        \   'Select AI login:',
+        \   '1) Claude (Anthropic API key)',
+        \   '2) ChatGPT (OpenAI OAuth, device-code)',
+        \   '3) Hanzo (hanzo.id OAuth, device-code)',
+        \   '4) API key (active provider)',
+        \])
+        echo "\n"
+
+        if l:choice == 1
+            let l:vendor = 'claude'
+        elseif l:choice == 2
+            let l:vendor = 'chatgpt'
+        elseif l:choice == 3
+            let l:vendor = 'hanzo'
+        elseif l:choice == 4
+            let l:vendor = 'apikey'
+        else
+            echo 'AILogin cancelled.'
+
+            return
+        endif
+    endif
+
+    if l:vendor ==# 'hanzo' || l:vendor ==# 'chatgpt'
+        call s:LoginOAuth(l:vendor)
+    elseif l:vendor ==# 'claude'
+        call s:LoginApiKey('anthropic')
+    elseif l:vendor ==# 'apikey'
+        call s:LoginApiKey(get(g:, 'hanzo_provider', 'anthropic'))
+    else
+        echohl ErrorMsg
+        echomsg 'Unknown AILogin vendor: ' . l:vendor
+        \   . ' (use claude|chatgpt|hanzo|apikey)'
+        echohl None
+    endif
+endfunction
+
+" :AILogout -- clear the shared credential stores via `dev`.
+function! hanzo#Logout() abort
+    if s:HasDev()
+        echo system(s:DevCli() . ' logout')
+    else
+        echo s:DevCli() . ' CLI not found; unset API key env vars to log out.'
+    endif
+endfunction
+
+" :AIStatus / :AIWhoami -- show login state and the active provider.
+function! hanzo#Status() abort
+    if s:HasDev()
+        " `dev login status` reports state only; it never prints the secret.
+        echo system(s:DevCli() . ' login status')
+    else
+        echo s:DevCli() . ' CLI not found; using env/config credentials.'
+    endif
+
+    echo 'Active provider: ' . get(g:, 'hanzo_provider', 'anthropic')
+endfunction
+
+" Command-line completion for :AILogin.
+function! hanzo#LoginComplete(arglead, cmdline, cursorpos) abort
+    let l:matches = []
+
+    for l:vendor in ['claude', 'chatgpt', 'hanzo', 'apikey']
+        if stridx(l:vendor, a:arglead) == 0
+            call add(l:matches, l:vendor)
+        endif
+    endfor
+
+    return l:matches
+endfunction

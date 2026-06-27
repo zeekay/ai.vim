@@ -147,6 +147,43 @@ require('hanzo').setup({
 })
 ```
 
+### AI Login (multi-vendor: Claude / ChatGPT / Hanzo / API key)
+
+`:AILogin` is **not vendor-locked**. It reuses the already-installed
+[`dev`](https://github.com/hanzoai/dev) CLI (Hanzo Dev) for the OAuth flows
+instead of reimplementing them, and the provider reads the **same** credential
+stores `dev` writes, so logging in once works for both the CLI and the editor.
+
+```vim
+:AILogin            " interactive menu: 1) Claude 2) ChatGPT 3) Hanzo 4) API key
+:AILogin chatgpt    " ChatGPT OAuth  (dev login --chatgpt --device-code)
+:AILogin hanzo      " Hanzo OAuth    (dev login --device-code)
+:AILogin claude     " prompt (hidden) for an Anthropic API key
+:AILogin apikey     " prompt (hidden) for an API key for the active provider
+:AILogout           " dev logout  (clears the shared stores)
+:AIStatus           " dev login status + the active g:hanzo_provider
+```
+
+How credentials are shared (resolution order mirrors `dev`'s `auth.rs`):
+
+| Provider  | Resolved from                                                  | Header sent |
+|-----------|---------------------------------------------------------------|-------------|
+| anthropic | `$ANTHROPIC_API_KEY` -> Claude Code keychain (macOS)          | `x-api-key` |
+| openai    | `$OPENAI_API_KEY` -> `~/.codex/auth.json`                     | `Authorization: Bearer` |
+| hanzo     | `$HANZO_API_KEY` -> `~/.hanzo/auth.json`                      | `Authorization: Bearer` |
+
+Notes:
+- **Headless / SSH**: OAuth uses the device-code flow automatically, so the
+  code + URL render in a `:terminal` and the callback completes without a
+  browser on the box.
+- The CLI to delegate to is configurable: `let g:ai_cli = 'dev'` (default).
+- If `dev` is not on `PATH`, `:AILogin` falls back to prompting for an API key,
+  storing it where the provider reads it, and tells you to install `dev` for
+  OAuth logins.
+- Secrets are entered with `inputsecret()` and piped to `dev` over stdin;
+  `dev` owns the on-disk store (`~/.codex`, `~/.hanzo`, `0600`). Nothing is
+  echoed, logged, or placed on a command line.
+
 You can configure the `url` for an OpenAI provider to run Neural with local
 models or other servers that offer an OpenAI compatible API, for example:
 
@@ -213,6 +250,10 @@ value. You can set a keybind to stop Neural by mapping to `<Plug>(neural_stop)`.
 | `:HanzoStop` | Stop bridge |
 | `:HanzoModel <model>` | Set active model |
 | `:HanzoMode <mode>` | Set mode (api/mcp/ollama) |
+| `:AILogin [vendor]` | Log in: Claude / ChatGPT / Hanzo / API key |
+| `:AILogout` | Clear shared credentials (`dev logout`) |
+| `:AIStatus` (`:AIWhoami`) | Show login status + active provider |
+| `:HanzoLogin` | Alias for `:AILogin hanzo` |
 
 ### Hanzo Keybindings
 

@@ -1,0 +1,107 @@
+*hanzo.txt*  Multi-vendor AI login and provider for Vim and Neovim.
+
+===============================================================================
+CONTENTS                                                       *hanzo-contents*
+
+  1. AI Login ................................... |hanzo-ailogin|
+    1.1 Commands ................................ |hanzo-ailogin-commands|
+    1.2 Vendors ................................. |hanzo-ailogin-vendors|
+    1.3 Shared credentials ...................... |hanzo-ailogin-credentials|
+    1.4 Headless / SSH .......................... |hanzo-ailogin-headless|
+    1.5 Configuration ........................... |hanzo-ailogin-config|
+
+===============================================================================
+1. AI Login                                                     *hanzo-ailogin*
+
+`:AILogin` is a unified, multi-vendor login. It is NOT vendor-locked: you can
+log in with Claude, ChatGPT, or Hanzo, or just paste an API key.
+
+It does NOT reimplement OAuth. The OAuth/device-code flows are delegated to the
+already-installed `dev` CLI (Hanzo Dev), and the AI provider reads the SAME
+credential stores `dev` writes. Log in once and both the CLI and the editor are
+authenticated.
+
+-------------------------------------------------------------------------------
+1.1 Commands                                           *hanzo-ailogin-commands*
+
+`:AILogin` [{vendor}]                                                *:AILogin*
+
+  With no argument, shows a menu:
+    1) Claude    2) ChatGPT    3) Hanzo    4) API key
+
+  With an argument, logs in directly. {vendor} is one of:
+    claude | chatgpt | hanzo | apikey
+  (the aliases `anthropic`, `openai`/`gpt`, and `api-key` are also accepted).
+
+`:AILogout`                                                         *:AILogout*
+
+  Clears the shared credential stores by running `dev logout`.
+
+`:AIStatus`                                                         *:AIStatus*
+`:AIWhoami`                                                         *:AIWhoami*
+
+  Shows `dev login status` and the active provider (|g:hanzo_provider|).
+
+`:HanzoLogin`                                                     *:HanzoLogin*
+
+  Back-compat alias for `:AILogin hanzo`.
+
+-------------------------------------------------------------------------------
+1.2 Vendors                                             *hanzo-ailogin-vendors*
+
+  Hanzo    Browser/device-code OAuth via `dev login --device-code`.
+           Sets |g:hanzo_provider| to "hanzo".
+
+  ChatGPT  OpenAI OAuth via `dev login --chatgpt --device-code`.
+           Sets |g:hanzo_provider| to "openai".
+
+  Claude   Prompts (hidden) for an Anthropic API key and stores it via
+           `dev login --with-api-key`. Sets |g:hanzo_provider| to "anthropic".
+           If you have no key, set $ANTHROPIC_API_KEY instead.
+
+  API key  Prompts (hidden) for an API key for the active provider and stores
+           it via `dev login --with-api-key`.
+
+-------------------------------------------------------------------------------
+1.3 Shared credentials                             *hanzo-ailogin-credentials*
+
+The provider resolves a credential for the active |g:hanzo_provider| in the
+same order the `dev` CLI uses, then sends the correct header per vendor:
+
+  anthropic  $ANTHROPIC_API_KEY -> Claude Code keychain (macOS)
+             header: `x-api-key` + `anthropic-version`
+  openai     $OPENAI_API_KEY    -> ~/.codex/auth.json
+             header: `Authorization: Bearer`
+  hanzo      $HANZO_API_KEY     -> ~/.hanzo/auth.json
+             header: `Authorization: Bearer`
+
+If nothing resolves, the provider falls back to the existing `api_key` config
+so current setups keep working.
+
+Secrets are entered with |inputsecret()| and piped to `dev` over stdin. `dev`
+owns the on-disk store (`~/.codex`, `~/.hanzo`, mode `0600`). Nothing is
+echoed, logged, or placed on a command line.
+
+-------------------------------------------------------------------------------
+1.4 Headless / SSH                                    *hanzo-ailogin-headless*
+
+On a headless or SSH box there is no browser, so the OAuth vendors use the
+device-code flow automatically. The code and verification URL render in a
+`:terminal` window and the callback completes there.
+
+-------------------------------------------------------------------------------
+1.5 Configuration                                       *hanzo-ailogin-config*
+
+                                                                     *g:ai_cli*
+`g:ai_cli`                                                  (default: "dev")
+
+  The CLI binary `:AILogin` delegates OAuth flows to. Override to point at a
+  different `dev`-compatible binary: >
+      let g:ai_cli = 'dev'
+<
+If `g:ai_cli` is not on $PATH, `:AILogin` falls back to prompting for an API
+key, stores it where the provider reads it, and notes that the `dev` CLI is
+needed for OAuth logins.
+
+===============================================================================
+ vim:tw=78:ts=8:ft=help:norl:

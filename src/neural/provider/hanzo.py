@@ -13,8 +13,9 @@ import json
 import os
 import platform
 import ssl
+import subprocess
 import sys
-from typing import Any, Optional
+from typing import Any, cast
 
 # Try to import websockets for MCP/ZAP bridge
 try:
@@ -28,6 +29,175 @@ HANZO_LLM_GATEWAY = "http://localhost:4000"  # Default LLM Gateway
 HANZO_MCP_BRIDGE = "ws://localhost:9228"     # Vim bridge port
 DATA_HEADER = "data: "
 DONE_MARKER = "[DONE]"
+ANTHROPIC_VERSION = "2023-06-01"
+
+# Keys a `dev`-written auth.json may carry, in the order each store prefers.
+_CODEX_KEYS = ("OPENAI_API_KEY", "openai_api_key")
+_HANZO_KEYS = ("openai_api_key", "OPENAI_API_KEY")
+
+
+# ---------------------------------------------------------------------------
+# Shared credential resolution
+#
+# Mirrors the Hanzo `dev` CLI (core/src/auth.rs::discover_credentials) so the
+# editor provider reads the SAME credentials that `:AILogin` / `dev login`
+# write. Resolution order, per active provider:
+#
+#   anthropic: ANTHROPIC_API_KEY env -> Claude Code keychain (macOS only)
+#   openai:    OPENAI_API_KEY env    -> ~/.codex/auth.json
+#   hanzo:     HANZO_API_KEY env     -> ~/.hanzo/auth.json
+#
+# Stdlib only. The auth.json files are read defensively, matching the schema
+# the `dev` CLI writes: api-key mode {"OPENAI_API_KEY": ...}, OAuth mode
+# {"tokens": {"access_token": ...}}.
+# ---------------------------------------------------------------------------
+
+
+def build_auth_headers(provider: str, api_key: str) -> dict[str, str]:
+    """Build request headers with the right auth scheme per vendor.
+
+    Anthropic uses ``x-api-key`` + ``anthropic-version``; OpenAI and the
+    Hanzo gateway use ``Authorization: Bearer``.
+    """
+    headers = {"Content-Type": "application/json"}
+
+    if api_key:
+        if provider == "anthropic":
+            headers["x-api-key"] = api_key
+            headers["anthropic-version"] = ANTHROPIC_VERSION
+        else:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+    return headers
+
+
+def _read_json_file(path: str) -> "dict[str, object] | None":
+    """Read a JSON object from ``path``; return None on any error."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            parsed: object = json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+    if isinstance(parsed, dict):
+        return cast("dict[str, object]", parsed)
+
+    return None
+
+
+def _str_field(data: dict[str, object], key: str) -> str:
+    """Return ``data[key]`` when it is a non-empty string, else ``""``."""
+    value = data.get(key)
+
+    if isinstance(value, str) and value:
+        return value
+
+    return ""
+
+
+def _direct_key(data: dict[str, object], keys: tuple[str, ...]) -> str:
+    """Return the first non-empty string value for any key in ``keys``."""
+    for key in keys:
+        found = _str_field(data, key)
+
+        if found:
+            return found
+
+    return ""
+
+
+def _access_token(data: dict[str, object]) -> str:
+    """Return ``tokens.access_token`` when present and non-empty."""
+    tokens = data.get("tokens")
+
+    if isinstance(tokens, dict):
+        return _str_field(cast("dict[str, object]", tokens), "access_token")
+
+    return ""
+
+
+def _codex_token(home: str) -> str:
+    """Resolve the OpenAI token from ~/.codex/auth.json."""
+    data = _read_json_file(os.path.join(home, ".codex", "auth.json"))
+
+    if data is None:
+        return ""
+
+    # OAuth mode stores tokens.access_token; api-key mode OPENAI_API_KEY.
+    return _access_token(data) or _direct_key(data, _CODEX_KEYS)
+
+
+def _hanzo_token(home: str) -> str:
+    """Resolve the Hanzo IAM token from ~/.hanzo/auth.json."""
+    data = _read_json_file(os.path.join(home, ".hanzo", "auth.json"))
+
+    if data is None:
+        return ""
+
+    # Login stores the token under openai_api_key/OPENAI_API_KEY; OAuth
+    # refresh stores tokens.access_token.
+    return _direct_key(data, _HANZO_KEYS) or _access_token(data)
+
+
+def _claude_keychain_token() -> str:
+    """Read the Anthropic token from the Claude Code macOS keychain."""
+    if platform.system() != "Darwin":
+        return ""
+
+    try:
+        result = subprocess.run(
+            [
+                "security", "find-generic-password",
+                "-s", "Claude Code-credentials", "-w",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+    if result.returncode != 0:
+        return ""
+
+    try:
+        parsed: object = json.loads(result.stdout.strip())
+    except ValueError:
+        return ""
+
+    if not isinstance(parsed, dict):
+        return ""
+
+    oauth = cast("dict[str, object]", parsed).get("claudeAiOauth")
+
+    if isinstance(oauth, dict):
+        return _str_field(cast("dict[str, object]", oauth), "accessToken")
+
+    return ""
+
+
+def resolve_shared_credential(provider: str, home: str = "") -> str:
+    """Resolve an API key/token for ``provider`` from shared stores.
+
+    Mirrors the Hanzo `dev` CLI resolution order. Returns an empty string
+    when nothing resolves, so callers can fall back to other config.
+    """
+    home = home or os.path.expanduser("~")
+
+    if provider == "anthropic":
+        return (
+            os.environ.get("ANTHROPIC_API_KEY", "")
+            or _claude_keychain_token()
+        )
+
+    if provider == "openai":
+        return os.environ.get("OPENAI_API_KEY", "") or _codex_token(home)
+
+    if provider == "hanzo":
+        return os.environ.get("HANZO_API_KEY", "") or _hanzo_token(home)
+
+    return ""
 
 
 class HanzoConfig:
@@ -89,20 +259,6 @@ def load_config(raw_config: dict[str, Any]) -> HanzoConfig:
             # Check for LLM Gateway first, then direct API
             url = os.environ.get("HANZO_LLM_GATEWAY", HANZO_LLM_GATEWAY)
 
-    # API key from config or environment
-    api_key = raw_config.get("api_key", "")
-    if not api_key:
-        # Try multiple environment variables
-        for env_var in [
-            "HANZO_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "OPENAI_API_KEY",
-            "GOOGLE_API_KEY",
-        ]:
-            api_key = os.environ.get(env_var, "")
-            if api_key:
-                break
-
     # Model selection
     model = raw_config.get("model", "claude-sonnet-4-20250514")
 
@@ -119,6 +275,25 @@ def load_config(raw_config: dict[str, Any]) -> HanzoConfig:
             provider = "ollama"
         else:
             provider = "anthropic"
+
+    # API key / token resolution, in priority order:
+    #   1. explicit api_key from config (existing users keep working)
+    #   2. shared credential stores per provider, mirroring the `dev` CLI
+    #      (env -> ~/.codex/auth.json -> ~/.hanzo/auth.json)
+    #   3. generic env-var fallback (back-compat, e.g. GOOGLE_API_KEY)
+    api_key = raw_config.get("api_key", "")
+    if not api_key:
+        api_key = resolve_shared_credential(provider)
+    if not api_key:
+        for env_var in [
+            "HANZO_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+        ]:
+            api_key = os.environ.get(env_var, "")
+            if api_key:
+                break
 
     # Generation settings
     temperature = float(raw_config.get("temperature", 0.2))
@@ -194,17 +369,7 @@ def call_openai_compatible(config: HanzoConfig, prompt: str) -> None:
     import urllib.request
     import urllib.error
 
-    headers = {
-        "Content-Type": "application/json",
-    }
-
-    # Set authorization header
-    if config.api_key:
-        if config.provider == "anthropic":
-            headers["x-api-key"] = config.api_key
-            headers["anthropic-version"] = "2023-06-01"
-        else:
-            headers["Authorization"] = f"Bearer {config.api_key}"
+    headers = build_auth_headers(config.provider, config.api_key)
 
     # Build messages
     messages = []

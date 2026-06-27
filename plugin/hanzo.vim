@@ -42,6 +42,9 @@ let g:hanzo_provider = get(g:, 'hanzo_provider', 'anthropic')
 let g:hanzo_mode = get(g:, 'hanzo_mode', 'api')
 let g:hanzo_llm_gateway = get(g:, 'hanzo_llm_gateway', 'http://localhost:4000')
 
+" AI login / CLI delegation (the binary :AILogin reuses for OAuth flows)
+let g:ai_cli = get(g:, 'ai_cli', 'dev')
+
 " Keybind settings
 let g:hanzo_set_default_keybinds = get(g:, 'hanzo_set_default_keybinds', 0)
 
@@ -87,6 +90,17 @@ command! -nargs=1 HanzoModel call hanzo#SetModel(<q-args>)
 command! -nargs=1 HanzoMode call hanzo#SetMode(<q-args>)
 command! HanzoModels call hanzo#Models()
 command! HanzoVersion call hanzo#Version()
+
+" ============================================================================
+" AI Login (multi-vendor: Claude / ChatGPT / Hanzo / API key)
+" ============================================================================
+
+command! -nargs=? -complete=customlist,hanzo#LoginComplete AILogin call hanzo#Login(<f-args>)
+command! AILogout call hanzo#Logout()
+command! AIStatus call hanzo#Status()
+command! AIWhoami call hanzo#Status()
+" Back-compat: :HanzoLogin is :AILogin hanzo
+command! HanzoLogin call hanzo#Login('hanzo')
 
 " ============================================================================
 " Mappings
